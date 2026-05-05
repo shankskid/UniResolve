@@ -1,7 +1,10 @@
 const crypto = require("crypto");
 
 function fixedUuid(seed) {
-  const hex = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 32);
+  const raw = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 32).split("");
+  raw[12] = "4";
+  raw[16] = "a";
+  const hex = raw.join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 

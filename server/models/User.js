@@ -23,6 +23,7 @@ module.exports = (sequelize, DataTypes) => {
     User.belongsTo(models.Hall, { foreignKey: "hall_id" });
     User.belongsTo(models.Campus, { foreignKey: "campus_id" });
     User.hasMany(models.OfficerScope, { foreignKey: "user_id" });
+    User.hasMany(models.PasswordResetToken, { foreignKey: "user_id" });
   };
 
   return User;

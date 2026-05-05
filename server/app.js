@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const { sequelize } = require("./models");
 const authRoutes = require("./routes/authRoutes");
+const ticketRoutes = require("./routes/ticketRoutes");
 
 const app = express();
 app.use(express.json());
@@ -20,6 +21,7 @@ app.get("/health/db", async (_req, res, next) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/tickets", ticketRoutes);
 
 app.use("/api", (_req, res) => {
   res.status(404).json({ message: "API route not found." });

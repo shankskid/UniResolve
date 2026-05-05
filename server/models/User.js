@@ -10,6 +10,7 @@ module.exports = (sequelize, DataTypes) => {
       password_hash: { type: DataTypes.TEXT, allowNull: false },
       role: { type: DataTypes.ENUM(...ROLE_VALUES), allowNull: false },
       user_type: { type: DataTypes.ENUM("student", "staff", "lecturer"), allowNull: true },
+      registration_number: { type: DataTypes.STRING(100), allowNull: true, unique: true },
       department_id: { type: DataTypes.UUID, allowNull: true },
       hall_id: { type: DataTypes.UUID, allowNull: true },
       campus_id: { type: DataTypes.UUID, allowNull: false },

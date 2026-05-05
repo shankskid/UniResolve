@@ -15,6 +15,7 @@ function sanitizeUser(user) {
     email: user.email,
     role: user.role,
     user_type: user.user_type,
+    registration_number: user.registration_number,
     department_id: user.department_id,
     hall_id: user.hall_id,
     campus_id: user.campus_id,
@@ -47,7 +48,17 @@ function hashResetToken(token) {
 }
 
 async function register(input) {
-  const { name, email, password, user_type, faculty_id, department_id, hall_id } = input;
+  const {
+    name,
+    email,
+    password,
+    user_type,
+    faculty_id,
+    department_id,
+    hall_id,
+    registration_number,
+    lives_in_hall
+  } = input;
 
   if (!PUBLIC_USER_TYPES.includes(user_type)) {
     throw new Error("Invalid user_type.");
@@ -68,23 +79,43 @@ async function register(input) {
 
   let hall = null;
   if (user_type === ROLES.STUDENT) {
-    if (!hall_id) {
-      throw new Error("Students must select a hall.");
+    if (!registration_number || !String(registration_number).trim()) {
+      throw new Error("Students must provide a registration number.");
     }
-    hall = await Hall.findByPk(hall_id);
-    if (!hall) {
-      throw new Error("Selected hall does not exist.");
-    }
-    if (hall.campus_id !== department.campus_id) {
-      throw new Error("Students cannot register with a hall from a different campus.");
+
+    const isResidential = Boolean(lives_in_hall) || Boolean(hall_id);
+    if (isResidential) {
+      if (!hall_id) {
+        throw new Error("Hall is required when lives_in_hall is true.");
+      }
+      hall = await Hall.findByPk(hall_id);
+      if (!hall) {
+        throw new Error("Selected hall does not exist.");
+      }
+      if (hall.campus_id !== department.campus_id) {
+        throw new Error("Students cannot register with a hall from a different campus.");
+      }
     }
   } else if (hall_id) {
     throw new Error("Only students can register with a hall.");
+  } else if (lives_in_hall) {
+    throw new Error("Only students can use lives_in_hall.");
+  } else if (registration_number) {
+    throw new Error("Only students can provide a registration number.");
   }
 
-  const existingUser = await User.findOne({ where: { email: email.toLowerCase() } });
+  const emailToUse = email.toLowerCase();
+  const registrationNumberToUse = registration_number ? String(registration_number).trim() : null;
+
+  const existingUser = await User.findOne({ where: { email: emailToUse } });
   if (existingUser) {
     throw new Error("Email is already in use.");
+  }
+  if (registrationNumberToUse) {
+    const existingRegistration = await User.findOne({ where: { registration_number: registrationNumberToUse } });
+    if (existingRegistration) {
+      throw new Error("Registration number is already in use.");
+    }
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
@@ -92,10 +123,11 @@ async function register(input) {
     User.create(
       {
         name,
-        email: email.toLowerCase(),
+        email: emailToUse,
         password_hash: passwordHash,
         role: user_type,
         user_type,
+        registration_number: registrationNumberToUse,
         department_id,
         hall_id: hall ? hall.id : null,
         campus_id: department.campus_id

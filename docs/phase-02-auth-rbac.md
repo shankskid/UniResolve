@@ -140,3 +140,14 @@ Phase checks confirmed:
 - password hash is not returned in auth responses
 
 Phase 2 is complete and ready for Phase 3 (Ticket Core + routing service).
+
+## Post-phase update: registration rules refinement
+
+Registration now also supports:
+
+1. `registration_number` (required for students, unique across users)
+2. Conditional hall selection for students:
+   - `lives_in_hall = true` -> `hall_id` required
+   - `lives_in_hall = false` (or omitted) -> `hall_id` optional
+
+Non-student users cannot pass `registration_number`, `hall_id`, or `lives_in_hall`.

@@ -13,6 +13,8 @@ const registerValidation = [
   body("user_type").isIn(["student", "staff", "lecturer"]),
   body("faculty_id").isUUID(),
   body("department_id").isUUID(),
+  body("registration_number").optional({ nullable: true }).isString().trim().isLength({ min: 2, max: 100 }),
+  body("lives_in_hall").optional().isBoolean(),
   body("hall_id").optional({ nullable: true }).isUUID()
 ];
 

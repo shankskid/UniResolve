@@ -12,5 +12,9 @@ module.exports = (sequelize, DataTypes) => {
     { tableName: "satisfaction_surveys", underscored: true, updatedAt: false }
   );
 
+  SatisfactionSurvey.associate = (models) => {
+    SatisfactionSurvey.belongsTo(models.Ticket, { foreignKey: "ticket_id" });
+  };
+
   return SatisfactionSurvey;
 };

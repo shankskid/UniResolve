@@ -7,6 +7,8 @@ const publicRoutes = require("./routes/publicRoutes");
 const ticketRoutes = require("./routes/ticketRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const featureRoutes = require("./routes/featureRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const reportRoutes = require("./routes/reportRoutes");
 
 const app = express();
 app.use(express.json());
@@ -30,6 +32,8 @@ app.use("/api", publicRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api", featureRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api", reportRoutes);
 
 app.use("/api", (_req, res) => {
   res.status(404).json({ message: "API route not found." });

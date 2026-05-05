@@ -12,5 +12,9 @@ module.exports = (sequelize, DataTypes) => {
     { tableName: "ticket_history", underscored: true, updatedAt: false }
   );
 
+  TicketHistory.associate = (models) => {
+    TicketHistory.belongsTo(models.Ticket, { foreignKey: "ticket_id" });
+  };
+
   return TicketHistory;
 };

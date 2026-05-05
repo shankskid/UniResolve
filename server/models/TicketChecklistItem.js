@@ -12,5 +12,9 @@ module.exports = (sequelize, DataTypes) => {
     { tableName: "ticket_checklist_items", underscored: true, updatedAt: false }
   );
 
+  TicketChecklistItem.associate = (models) => {
+    TicketChecklistItem.belongsTo(models.ResolutionChecklist, { foreignKey: "checklist_id", as: "checklist" });
+  };
+
   return TicketChecklistItem;
 };

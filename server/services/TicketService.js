@@ -1,11 +1,28 @@
+const crypto = require("crypto");
 const { Op } = require("sequelize");
-const { canBeAssignedRole, JURISDICTIONS, ROLES, TICKET_STATUS, URGENCY } = require("@uniresolve/shared");
+const bcrypt = require("bcrypt");
+const {
+  ANONYMOUS_SUBMISSION,
+  canBeAssignedRole,
+  JURISDICTIONS,
+  ROLES,
+  TICKET_STATUS,
+  URGENCY
+} = require("@uniresolve/shared");
 const {
   sequelize,
+  CannedResponse,
   Category,
   Department,
+  Hall,
+  KnowledgeBase,
   OfficerScope,
+  ResolutionChecklist,
+  SatisfactionSurvey,
   Ticket,
+  TicketAttachment,
+  TicketChecklistItem,
+  TicketComment,
   TicketEscalation,
   TicketHistory,
   User
@@ -21,6 +38,14 @@ const ESCALATE_ROLES = [
   ROLES.DEPT_GRIEVANCE_OFFICER,
   ROLES.HALL_OVERSEER,
   ROLES.FACULTY_OVERSEER
+];
+const OFFICER_OR_ADMIN_ROLES = [
+  ROLES.HALL_GRIEVANCE_OFFICER,
+  ROLES.DEPT_GRIEVANCE_OFFICER,
+  ROLES.HALL_OVERSEER,
+  ROLES.FACULTY_OVERSEER,
+  ROLES.CAMPUS_ADMIN,
+  ROLES.UNIVERSITY_ADMIN
 ];
 
 function calculateSlaDeadline(urgency) {
@@ -199,12 +224,25 @@ async function getTicketScopedOrThrow(ticketId, user) {
   return ticket;
 }
 
-async function createTicket(user, payload) {
-  if (!TICKET_CREATOR_ROLES.includes(user.role)) {
-    throw new Error("Only students, staff, or lecturers can create tickets.");
-  }
+async function buildTicketChecklist(ticketId, categoryId, transaction) {
+  const templateSteps = await ResolutionChecklist.findAll({
+    where: { category_id: categoryId },
+    order: [["step_order", "ASC"]],
+    transaction
+  });
 
-  const submitter = await User.findByPk(user.id);
+  for (const step of templateSteps) {
+    await TicketChecklistItem.create(
+      {
+        ticket_id: ticketId,
+        checklist_id: step.id
+      },
+      { transaction }
+    );
+  }
+}
+
+async function createTicketCore(submitter, payload, forcedAnonymous = false) {
   const category = await Category.findByPk(payload.category_id);
   if (!submitter || !category) {
     throw new Error("Invalid submitter or category.");
@@ -237,12 +275,13 @@ async function createTicket(user, payload) {
         assigned_to: route.assignee ? route.assignee.id : null,
         campus_id: submitter.campus_id,
         jurisdiction_type: route.jurisdiction,
-        is_anonymous: Boolean(payload.is_anonymous),
+        is_anonymous: forcedAnonymous || Boolean(payload.is_anonymous),
         sla_deadline
       },
       { transaction }
     );
 
+    await buildTicketChecklist(ticket.id, category.id, transaction);
     await writeHistory(ticket.id, "SYSTEM", "assigned_to", null, route.assignee ? route.assignee.id : null, transaction);
     await writeHistory(ticket.id, "SYSTEM", "sla_deadline", null, sla_deadline.toISOString(), transaction);
 
@@ -313,6 +352,61 @@ async function createTicket(user, payload) {
   });
 }
 
+async function createTicket(user, payload) {
+  if (!TICKET_CREATOR_ROLES.includes(user.role)) {
+    throw new Error("Only students, staff, or lecturers can create tickets.");
+  }
+  const submitter = await User.findByPk(user.id);
+  return createTicketCore(submitter, payload, false);
+}
+
+async function createAnonymousTicket(payload) {
+  const category = await Category.findByPk(payload.category_id);
+  if (!category) {
+    throw new Error("Invalid submitter or category.");
+  }
+  if (!ANONYMOUS_SUBMISSION.SENSITIVE_CATEGORIES.includes(category.name)) {
+    throw new Error("Anonymous submission is limited to sensitive categories.");
+  }
+
+  const department = await Department.findByPk(payload.department_id);
+  if (!department) {
+    throw new Error("Selected department does not exist.");
+  }
+
+  if (payload.hall_id) {
+    const hall = await Hall.findByPk(payload.hall_id);
+    if (!hall) {
+      throw new Error("Selected hall does not exist.");
+    }
+    if (hall.campus_id !== department.campus_id) {
+      throw new Error("Students cannot register with a hall from a different campus.");
+    }
+  }
+
+  const contactEmail = payload.contact_email && payload.contact_email.trim()
+    ? payload.contact_email.trim().toLowerCase()
+    : `anonymous.${Date.now()}.${crypto.randomBytes(4).toString("hex")}@uniresolve.local`;
+
+  const randomPassword = crypto.randomBytes(24).toString("hex");
+  const passwordHash = await bcrypt.hash(randomPassword, 12);
+  const registration = `ANON-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+
+  const submitter = await User.create({
+    name: "Anonymous Submitter",
+    email: contactEmail,
+    password_hash: passwordHash,
+    role: ROLES.STUDENT,
+    user_type: ROLES.STUDENT,
+    registration_number: registration,
+    department_id: department.id,
+    hall_id: payload.hall_id || null,
+    campus_id: department.campus_id
+  });
+
+  return createTicketCore(submitter, { ...payload, urgency: URGENCY.URGENT }, true);
+}
+
 async function listTickets(user) {
   const where = await getAccessibleTicketFilter(user);
   const tickets = await Ticket.findAll({
@@ -341,6 +435,18 @@ async function updateStatus(user, ticketId, status) {
     throw new Error("Role cannot update ticket status.");
   }
   const ticket = await getTicketScopedOrThrow(ticketId, user);
+
+  if (status === TICKET_STATUS.RESOLVED) {
+    const incomplete = await TicketChecklistItem.count({
+      where: {
+        ticket_id: ticket.id,
+        is_completed: false
+      }
+    });
+    if (incomplete > 0) {
+      throw new Error("Tickets cannot be resolved with incomplete checklist items.");
+    }
+  }
 
   const previous = ticket.status;
   if (previous === status) {
@@ -471,11 +577,202 @@ async function escalateTicket(user, ticketId, reason) {
   });
 }
 
+async function addComment(user, ticketId, payload) {
+  const ticket = await getTicketScopedOrThrow(ticketId, user);
+  const isInternal = Boolean(payload.is_internal);
+
+  if (isInternal && !OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+    throw new Error("Only officers and admins can create internal comments.");
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    const comment = await TicketComment.create(
+      {
+        ticket_id: ticket.id,
+        author_id: user.id,
+        body: payload.body,
+        is_internal: isInternal
+      },
+      { transaction }
+    );
+
+    const recipients = [ticket.submitter_id, ticket.assigned_to].filter(Boolean);
+    await NotificationService.notifyMany(
+      recipients,
+      {
+        ticket_id: ticket.id,
+        type: "ticket_comment_added",
+        message: `A new comment was added to ticket ${ticket.id}.`
+      },
+      transaction
+    );
+
+    return comment;
+  });
+}
+
+async function getComments(user, ticketId) {
+  await getTicketScopedOrThrow(ticketId, user);
+  const where = { ticket_id: ticketId };
+  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+    where.is_internal = false;
+  }
+
+  return TicketComment.findAll({
+    where,
+    include: [{ model: User, as: "author", attributes: ["id", "name", "role"] }],
+    order: [["created_at", "ASC"]]
+  });
+}
+
+async function addAttachment(user, ticketId, file) {
+  await getTicketScopedOrThrow(ticketId, user);
+  return TicketAttachment.create({
+    ticket_id: ticketId,
+    uploader_id: user.id,
+    file_url: file.path,
+    file_name: file.originalname,
+    file_size: file.size
+  });
+}
+
+async function getHistory(user, ticketId) {
+  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+    throw new Error("Role cannot view ticket history.");
+  }
+  await getTicketScopedOrThrow(ticketId, user);
+  return TicketHistory.findAll({
+    where: { ticket_id: ticketId },
+    order: [["created_at", "ASC"]]
+  });
+}
+
+async function completeChecklistItem(user, ticketId, itemId, isCompleted) {
+  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+    throw new Error("Role cannot update checklist items.");
+  }
+  await getTicketScopedOrThrow(ticketId, user);
+  const item = await TicketChecklistItem.findOne({
+    where: { id: itemId, ticket_id: ticketId }
+  });
+  if (!item) {
+    throw new Error("Checklist item not found.");
+  }
+
+  item.is_completed = Boolean(isCompleted);
+  item.completed_by = isCompleted ? user.id : null;
+  item.completed_at = isCompleted ? new Date() : null;
+  await item.save();
+
+  return item;
+}
+
+async function submitSurvey(user, payload) {
+  if (user.role !== ROLES.STUDENT) {
+    throw new Error("Only students can submit surveys.");
+  }
+
+  const ticket = await Ticket.findByPk(payload.ticket_id);
+  if (!ticket) {
+    throw new Error("Ticket not found or inaccessible.");
+  }
+  if (ticket.submitter_id !== user.id) {
+    throw new Error("Survey can only be submitted by the ticket submitter.");
+  }
+  if (![TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].includes(ticket.status)) {
+    throw new Error("Survey can only be submitted for resolved or closed tickets.");
+  }
+
+  const existingSurvey = await SatisfactionSurvey.findOne({ where: { ticket_id: payload.ticket_id } });
+  if (existingSurvey) {
+    throw new Error("Survey already submitted for this ticket.");
+  }
+
+  return SatisfactionSurvey.create({
+    ticket_id: payload.ticket_id,
+    submitter_id: user.id,
+    resolved_satisfactorily: payload.resolved_satisfactorily,
+    response_time_score: payload.response_time_score,
+    comments: payload.comments || null
+  });
+}
+
+async function listCannedResponses(user, categoryId) {
+  if (![...OFFICER_OR_ADMIN_ROLES].includes(user.role)) {
+    throw new Error("Role cannot view canned responses.");
+  }
+  const where = {};
+  if (categoryId) {
+    where[Op.or] = [{ category_id: categoryId }, { category_id: null }];
+  }
+  return CannedResponse.findAll({
+    where,
+    order: [["created_at", "DESC"]]
+  });
+}
+
+async function createCannedResponse(user, payload) {
+  if (![ROLES.CAMPUS_ADMIN, ROLES.UNIVERSITY_ADMIN].includes(user.role)) {
+    throw new Error("Role cannot create canned responses.");
+  }
+
+  return CannedResponse.create({
+    created_by: user.id,
+    title: payload.title,
+    body: payload.body,
+    category_id: payload.category_id || null
+  });
+}
+
+async function listKnowledgeBase(user) {
+  const where = OFFICER_OR_ADMIN_ROLES.includes(user.role) ? {} : { is_public: true };
+  return KnowledgeBase.findAll({
+    where,
+    order: [["created_at", "DESC"]]
+  });
+}
+
+async function createKnowledgeBase(user, payload) {
+  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+    throw new Error("Role cannot create knowledge base entries.");
+  }
+
+  return KnowledgeBase.create({
+    created_by: user.id,
+    title: payload.title,
+    body: payload.body,
+    category_id: payload.category_id || null,
+    source_ticket_id: payload.source_ticket_id || null,
+    is_public: Boolean(payload.is_public)
+  });
+}
+
+async function listChecklistItems(user, ticketId) {
+  await getTicketScopedOrThrow(ticketId, user);
+  return TicketChecklistItem.findAll({
+    where: { ticket_id: ticketId },
+    include: [{ model: ResolutionChecklist, as: "checklist", attributes: ["id", "step_order", "step_text"] }],
+    order: [[{ model: ResolutionChecklist, as: "checklist" }, "step_order", "ASC"]]
+  });
+}
+
 module.exports = {
   createTicket,
+  createAnonymousTicket,
   listTickets,
   getTicket,
   updateStatus,
   assignTicket,
-  escalateTicket
+  escalateTicket,
+  addComment,
+  getComments,
+  addAttachment,
+  getHistory,
+  completeChecklistItem,
+  submitSurvey,
+  listCannedResponses,
+  createCannedResponse,
+  listKnowledgeBase,
+  createKnowledgeBase,
+  listChecklistItems
 };

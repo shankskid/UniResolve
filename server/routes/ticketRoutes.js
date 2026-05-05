@@ -4,6 +4,7 @@ const { TICKET_STATUS_VALUES, URGENCY_VALUES } = require("@uniresolve/shared");
 const ticketsController = require("../controllers/ticketsController");
 const authenticate = require("../middleware/authenticate");
 const validate = require("../middleware/validate");
+const upload = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -25,6 +26,28 @@ router.post(
 router.get("/", ticketsController.listTickets);
 
 router.get("/:id", [param("id").isUUID()], validate, ticketsController.getTicket);
+router.get("/:id/comments", [param("id").isUUID()], validate, ticketsController.listComments);
+router.get("/:id/history", [param("id").isUUID()], validate, ticketsController.getHistory);
+router.get("/:id/checklist", [param("id").isUUID()], validate, ticketsController.listChecklist);
+
+router.post(
+  "/:id/comments",
+  [
+    param("id").isUUID(),
+    body("body").isString().trim().isLength({ min: 1, max: 5000 }),
+    body("is_internal").optional().isBoolean()
+  ],
+  validate,
+  ticketsController.addComment
+);
+
+router.post(
+  "/:id/attachments",
+  [param("id").isUUID()],
+  validate,
+  upload.single("file"),
+  ticketsController.addAttachment
+);
 
 router.patch(
   "/:id/status",
@@ -38,6 +61,13 @@ router.patch(
   [param("id").isUUID(), body("assigned_to").isUUID()],
   validate,
   ticketsController.assignTicket
+);
+
+router.patch(
+  "/:id/checklist/:itemId",
+  [param("id").isUUID(), param("itemId").isUUID(), body("is_completed").isBoolean()],
+  validate,
+  ticketsController.updateChecklistItem
 );
 
 router.post(

@@ -11,5 +11,9 @@ module.exports = (sequelize, DataTypes) => {
     { tableName: "ticket_comments", underscored: true, updatedAt: false }
   );
 
+  TicketComment.associate = (models) => {
+    TicketComment.belongsTo(models.User, { foreignKey: "author_id", as: "author" });
+  };
+
   return TicketComment;
 };

@@ -10,5 +10,9 @@ module.exports = (sequelize, DataTypes) => {
     { tableName: "resolution_checklists", underscored: true, updatedAt: false }
   );
 
+  ResolutionChecklist.associate = (models) => {
+    ResolutionChecklist.hasMany(models.TicketChecklistItem, { foreignKey: "checklist_id" });
+  };
+
   return ResolutionChecklist;
 };

@@ -92,6 +92,73 @@ async function getFacultyScopeDepartmentIds(userId) {
   return departments.map((department) => department.id);
 }
 
+async function getFacultyOverseersForDepartment(departmentId, transaction) {
+  const department = await Department.findByPk(departmentId, {
+    attributes: ["faculty_id"],
+    transaction
+  });
+  if (!department) {
+    return [];
+  }
+
+  const scopes = await OfficerScope.findAll({
+    where: {
+      scope_type: "faculty",
+      scope_id: department.faculty_id
+    },
+    include: [
+      {
+        model: User,
+        required: true,
+        where: {
+          role: ROLES.FACULTY_OVERSEER,
+          is_active: true
+        }
+      }
+    ],
+    transaction
+  });
+
+  return scopes.map((scope) => scope.user_id);
+}
+
+async function getEscalationTargetUserIds(ticket, targetRole, transaction) {
+  if (targetRole === ROLES.HALL_OVERSEER) {
+    const users = await User.findAll({
+      where: {
+        role: ROLES.HALL_OVERSEER,
+        campus_id: ticket.campus_id,
+        is_active: true
+      },
+      attributes: ["id"],
+      transaction
+    });
+    return users.map((userRecord) => userRecord.id);
+  }
+
+  if (targetRole === ROLES.FACULTY_OVERSEER) {
+    const submitterDepartmentId = ticket.submitter?.department_id;
+    if (!submitterDepartmentId) {
+      return [];
+    }
+    return getFacultyOverseersForDepartment(submitterDepartmentId, transaction);
+  }
+
+  if (targetRole === ROLES.UNIVERSITY_ADMIN) {
+    const users = await User.findAll({
+      where: {
+        role: ROLES.UNIVERSITY_ADMIN,
+        is_active: true
+      },
+      attributes: ["id"],
+      transaction
+    });
+    return users.map((userRecord) => userRecord.id);
+  }
+
+  return [];
+}
+
 async function getAccessibleTicketFilter(user) {
   if ([ROLES.STUDENT, ROLES.STAFF, ROLES.LECTURER].includes(user.role)) {
     return { submitter_id: user.id };
@@ -179,6 +246,18 @@ async function createTicket(user, payload) {
     await writeHistory(ticket.id, "SYSTEM", "assigned_to", null, route.assignee ? route.assignee.id : null, transaction);
     await writeHistory(ticket.id, "SYSTEM", "sla_deadline", null, sla_deadline.toISOString(), transaction);
 
+    if (route.assignee) {
+      await NotificationService.notifyMany(
+        [route.assignee.id],
+        {
+          ticket_id: ticket.id,
+          type: "ticket_assigned",
+          message: `You have been assigned ticket ${ticket.id}.`
+        },
+        transaction
+      );
+    }
+
     if (route.fallbackEscalation) {
       await TicketEscalation.create(
         {
@@ -207,6 +286,27 @@ async function createTicket(user, payload) {
           transaction
         );
       }
+    }
+
+    if (category.name === "Sexual Harassment / Discrimination") {
+      const universityAdmins = await User.findAll({
+        where: {
+          role: ROLES.UNIVERSITY_ADMIN,
+          is_active: true
+        },
+        attributes: ["id"],
+        transaction
+      });
+
+      await NotificationService.notifyMany(
+        universityAdmins.map((record) => record.id),
+        {
+          ticket_id: ticket.id,
+          type: "harassment_alert",
+          message: `Urgent harassment/discrimination ticket ${ticket.id} requires immediate attention.`
+        },
+        transaction
+      );
     }
 
     return ticket;
@@ -257,6 +357,32 @@ async function updateStatus(user, ticketId, status) {
     }
     await ticket.save({ transaction });
     await writeHistory(ticket.id, user.id, "status", previous, status, transaction);
+
+    await NotificationService.notifyMany(
+      [ticket.submitter_id],
+      {
+        ticket_id: ticket.id,
+        type: "ticket_status_updated",
+        message: `Ticket ${ticket.id} status changed from ${previous} to ${status}.`
+      },
+      transaction
+    );
+
+    if ([TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].includes(status)) {
+      const submitter = await User.findByPk(ticket.submitter_id, {
+        attributes: ["email"],
+        transaction
+      });
+
+      if (submitter?.email) {
+        await NotificationService.sendEmail({
+          to: submitter.email,
+          subject: `UniResolve Ticket ${ticket.id} ${status}`,
+          text: `Your ticket ${ticket.id} has been marked as ${status}.`
+        });
+      }
+    }
+
     return getTicket(user, ticket.id);
   });
 }
@@ -283,6 +409,17 @@ async function assignTicket(user, ticketId, assignedTo) {
     ticket.assigned_to = assignee.id;
     await ticket.save({ transaction });
     await writeHistory(ticket.id, user.id, "assigned_to", previous, assignee.id, transaction);
+
+    await NotificationService.notifyMany(
+      [assignee.id, ticket.submitter_id],
+      {
+        ticket_id: ticket.id,
+        type: "ticket_reassigned",
+        message: `Ticket ${ticket.id} was reassigned.`
+      },
+      transaction
+    );
+
     return getTicket(user, ticket.id);
   });
 }
@@ -318,6 +455,18 @@ async function escalateTicket(user, ticketId, reason) {
       { transaction }
     );
     await writeHistory(ticket.id, user.id, "escalation", null, `${targetRole}:${reason}`, transaction);
+
+    const targetUserIds = await getEscalationTargetUserIds(ticket, targetRole, transaction);
+    await NotificationService.notifyMany(
+      targetUserIds,
+      {
+        ticket_id: ticket.id,
+        type: "ticket_escalated",
+        message: `Ticket ${ticket.id} was escalated to ${targetRole}.`
+      },
+      transaction
+    );
+
     return getTicket(user, ticket.id);
   });
 }

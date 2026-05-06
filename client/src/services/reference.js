@@ -25,3 +25,8 @@ export async function getHalls(campusId) {
   });
   return data.items || [];
 }
+
+export async function getCategories() {
+  const { data } = await api.get("/reference/categories");
+  return data.items || [];
+}

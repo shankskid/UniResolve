@@ -5,9 +5,12 @@ import DashboardShell from "./pages/DashboardShell";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
+import NewTicketPage from "./pages/NewTicketPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import RegisterPage from "./pages/RegisterPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
+import TicketDetailPage from "./pages/TicketDetailPage";
+import TicketsPage from "./pages/TicketsPage";
 
 export default function App() {
   return (
@@ -23,6 +26,30 @@ export default function App() {
           element={
             <ProtectedRoute>
               <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tickets"
+          element={
+            <ProtectedRoute>
+              <TicketsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tickets/new"
+          element={
+            <ProtectedRoute>
+              <NewTicketPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tickets/:id"
+          element={
+            <ProtectedRoute>
+              <TicketDetailPage />
             </ProtectedRoute>
           }
         />

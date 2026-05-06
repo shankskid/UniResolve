@@ -39,9 +39,8 @@ export default function DashboardShell() {
     <div className="split">
       <aside className="sidebar">
         <NavLink to="/dashboard">Overview</NavLink>
-        <a href="#tickets">Tickets</a>
-        <a href="#notifications">Notifications</a>
-        <a href="#knowledge">Knowledge base</a>
+        <NavLink to="/tickets">Tickets</NavLink>
+        <NavLink to="/tickets/new">Submit Ticket</NavLink>
       </aside>
       <section className="grid" style={{ alignContent: "start" }}>
         <div className="card">

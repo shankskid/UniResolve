@@ -14,6 +14,7 @@ export default function AppLayout() {
             {!user && <NavLink to="/login">Login</NavLink>}
             {!user && <NavLink to="/register">Register</NavLink>}
             {user && <NavLink to="/dashboard">Dashboard</NavLink>}
+            {user && <NavLink to="/tickets">Tickets</NavLink>}
             {user && (
               <>
                 <span className="badge badge-role">{user.role}</span>

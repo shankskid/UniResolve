@@ -57,6 +57,9 @@ function ChartCard({ title, children, empty }) {
 }
 
 function DashboardCards({ role, tickets, analytics, analyticsError }) {
+  const isAdminAnalyticsRole = ANALYTICS_ROLES.has(role);
+  const isUniversityAdmin = role === "university_admin";
+
   const statusBreakdown = useMemo(() => {
     if (analytics?.overview?.status_breakdown) {
       return Object.entries(analytics.overview.status_breakdown).map(([name, value]) => ({ name, value }));
@@ -98,8 +101,8 @@ function DashboardCards({ role, tickets, analytics, analyticsError }) {
         <StatCard label="Active vs Resolved" value={`${myOpenCount} / ${myResolvedCount}`} help="Open+in-progress / resolved+closed." />
       </div>
 
-      {analyticsError && (
-        <div className="notice">Some analytics are unavailable for your role. You still have ticket-based dashboard metrics.</div>
+      {isAdminAnalyticsRole && analyticsError && (
+        <div className="notice">Some analytics are temporarily unavailable. Ticket metrics are still shown.</div>
       )}
 
       <div className="grid grid-2">
@@ -133,7 +136,7 @@ function DashboardCards({ role, tickets, analytics, analyticsError }) {
         </ChartCard>
       </div>
 
-      {!!analytics?.overview && (
+      {isAdminAnalyticsRole && !!analytics?.overview && (
         <div className="grid grid-3">
           <StatCard label="Total Tickets (Scope)" value={String(analytics.overview.total_tickets || 0)} />
           <StatCard label="SLA Compliance %" value={String(analytics.overview.sla_compliance_pct ?? 0)} />
@@ -141,59 +144,65 @@ function DashboardCards({ role, tickets, analytics, analyticsError }) {
         </div>
       )}
 
-      <div className="grid grid-2">
-        <ChartCard title="Tickets by Category" empty={!categoryItems.length ? "No category analytics available." : null}>
-          <div style={{ width: "100%", height: 260 }}>
-            <ResponsiveContainer>
-              <BarChart data={categoryItems.map((item) => ({ name: item.category_name, tickets: item.ticket_count }))}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" hide />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Bar dataKey="tickets" fill="#7c3aed" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
+      {isAdminAnalyticsRole && (
+        <div className="grid grid-2">
+          <ChartCard title="Tickets by Category" empty={!categoryItems.length ? "No category analytics available." : null}>
+            <div style={{ width: "100%", height: 260 }}>
+              <ResponsiveContainer>
+                <BarChart data={categoryItems.map((item) => ({ name: item.category_name, tickets: item.ticket_count }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" hide />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="tickets" fill="#7c3aed" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </ChartCard>
 
-        <ChartCard title="Campus Comparison" empty={!comparisonItems.length ? "Campus comparison is available to university admin." : null}>
+          {isUniversityAdmin && (
+            <ChartCard title="Campus Comparison" empty={!comparisonItems.length ? "No campus comparison data available." : null}>
+              <div style={{ width: "100%", height: 260 }}>
+                <ResponsiveContainer>
+                  <BarChart
+                    data={comparisonItems.map((item) => ({
+                      name: item.campus_name,
+                      compliance: item.sla_compliance_pct
+                    }))}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip />
+                    <Bar dataKey="compliance" fill="#16a34a" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </ChartCard>
+          )}
+        </div>
+      )}
+
+      {isAdminAnalyticsRole && (
+        <ChartCard title="SLA Breach Rate by Campus" empty={!slaRows.length ? "SLA cohort analytics unavailable." : null}>
           <div style={{ width: "100%", height: 260 }}>
             <ResponsiveContainer>
               <BarChart
-                data={comparisonItems.map((item) => ({
-                  name: item.campus_name,
-                  compliance: item.sla_compliance_pct
+                data={slaRows.map((item) => ({
+                  name: item.name,
+                  breach_rate_pct: item.breach_rate_pct
                 }))}
               >
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" />
                 <YAxis domain={[0, 100]} />
                 <Tooltip />
-                <Bar dataKey="compliance" fill="#16a34a" />
+                <Bar dataKey="breach_rate_pct" fill="#ea580c" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </ChartCard>
-      </div>
-
-      <ChartCard title="SLA Breach Rate by Campus" empty={!slaRows.length ? "SLA cohort analytics unavailable." : null}>
-        <div style={{ width: "100%", height: 260 }}>
-          <ResponsiveContainer>
-            <BarChart
-              data={slaRows.map((item) => ({
-                name: item.name,
-                breach_rate_pct: item.breach_rate_pct
-              }))}
-            >
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis domain={[0, 100]} />
-              <Tooltip />
-              <Bar dataKey="breach_rate_pct" fill="#ea580c" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </ChartCard>
+      )}
     </div>
   );
 }
@@ -232,32 +241,22 @@ export default function DashboardShell() {
         return;
       }
 
-      try {
-        const requests = [
-          getOverview(),
-          getByCategory(),
-          getSlaCompliance()
-        ];
-        if (user.role === "university_admin") {
-          requests.push(getCampusComparison());
-        }
-
-        const [overviewResult, byCategoryResult, slaResult, comparisonResult] = await Promise.allSettled(requests);
-        const nextAnalytics = {
-          overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
-          byCategory: byCategoryResult.status === "fulfilled" ? byCategoryResult.value : [],
-          sla: slaResult.status === "fulfilled" ? slaResult.value : null,
-          comparison:
-            user.role === "university_admin" && comparisonResult?.status === "fulfilled" ? comparisonResult.value : []
-        };
-        const hasFailures = [overviewResult, byCategoryResult, slaResult].some((result) => result.status === "rejected");
-
-        setAnalytics(nextAnalytics);
-        setAnalyticsError(hasFailures);
-      } catch {
-        setAnalyticsError(true);
-        setAnalytics({ overview: null, byCategory: [], sla: null, comparison: [] });
+      const requests = [getOverview(), getByCategory(), getSlaCompliance()];
+      if (user.role === "university_admin") {
+        requests.push(getCampusComparison());
       }
+
+      const [overviewResult, byCategoryResult, slaResult, comparisonResult] = await Promise.allSettled(requests);
+      const nextAnalytics = {
+        overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
+        byCategory: byCategoryResult.status === "fulfilled" ? byCategoryResult.value : [],
+        sla: slaResult.status === "fulfilled" ? slaResult.value : null,
+        comparison: user.role === "university_admin" && comparisonResult?.status === "fulfilled" ? comparisonResult.value : []
+      };
+      const hasFailures = [overviewResult, byCategoryResult, slaResult].some((result) => result.status === "rejected");
+
+      setAnalytics(nextAnalytics);
+      setAnalyticsError(hasFailures);
     }
 
     loadAnalytics();

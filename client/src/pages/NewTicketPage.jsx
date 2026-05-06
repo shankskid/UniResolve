@@ -8,7 +8,6 @@ const DEFAULT_FORM = {
   title: "",
   description: "",
   category_id: "",
-  urgency: "medium",
   is_anonymous: false
 };
 
@@ -26,13 +25,6 @@ export default function NewTicketPage() {
 
   const selectedCategory = useMemo(() => categories.find((c) => c.id === form.category_id), [categories, form.category_id]);
   const forceAnonymousHint = selectedCategory?.name === "Sexual Harassment / Discrimination";
-  const forceUrgency = selectedCategory?.name === "Sexual Harassment / Discrimination";
-
-  useEffect(() => {
-    if (forceUrgency && form.urgency !== "urgent") {
-      setForm((prev) => ({ ...prev, urgency: "urgent" }));
-    }
-  }, [forceUrgency, form.urgency]);
 
   function update(name, value) {
     setForm((prev) => ({ ...prev, [name]: value }));
@@ -44,7 +36,6 @@ export default function NewTicketPage() {
     try {
       const payload = {
         ...form,
-        urgency: forceUrgency ? "urgent" : form.urgency,
         is_anonymous: forceAnonymousHint ? true : Boolean(form.is_anonymous)
       };
       const ticket = await createTicket(payload);
@@ -85,44 +76,27 @@ export default function NewTicketPage() {
             required
           />
         </div>
-        <div className="grid grid-2">
-          <div>
-            <label className="label" htmlFor="ticket-category">
-              Category
-            </label>
-            <select
-              id="ticket-category"
-              className="select"
-              value={form.category_id}
-              onChange={(e) => update("category_id", e.target.value)}
-              required
-            >
-              <option value="">Select category</option>
-              {categories.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label" htmlFor="ticket-urgency">
-              Urgency
-            </label>
-            <select
-              id="ticket-urgency"
-              className="select"
-              value={form.urgency}
-              onChange={(e) => update("urgency", e.target.value)}
-              disabled={forceUrgency}
-              required
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-          </div>
+        <div>
+          <label className="label" htmlFor="ticket-category">
+            Category
+          </label>
+          <select
+            id="ticket-category"
+            className="select"
+            value={form.category_id}
+            onChange={(e) => update("category_id", e.target.value)}
+            required
+          >
+            <option value="">Select category</option>
+            {categories.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <p className="muted" style={{ margin: "0.4rem 0 0" }}>
+            Urgency is assigned automatically from policy and category rules.
+          </p>
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
           <input
@@ -134,7 +108,7 @@ export default function NewTicketPage() {
           Submit anonymously
         </label>
         {forceAnonymousHint && (
-          <div className="notice">For this category, anonymous mode is recommended and urgency is enforced by policy.</div>
+          <div className="notice">For this category, anonymous mode and urgency are enforced by policy.</div>
         )}
         <button type="submit" className="btn btn-primary" disabled={submitting}>
           {submitting ? "Submitting..." : "Submit ticket"}

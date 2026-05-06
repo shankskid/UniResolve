@@ -250,16 +250,7 @@ async function createTicketCore(submitter, payload, forcedAnonymous = false) {
 
   const forcedUrgency = category.name === "Sexual Harassment / Discrimination" ? URGENCY.URGENT : null;
   const minUrgency = category.min_urgency;
-  const urgencyOrder = [URGENCY.LOW, URGENCY.MEDIUM, URGENCY.HIGH, URGENCY.URGENT];
-  const selectedUrgency = forcedUrgency || payload.urgency;
-
-  if (minUrgency && urgencyOrder.indexOf(selectedUrgency) < urgencyOrder.indexOf(minUrgency)) {
-    throw new Error(`Urgency for this category must be at least ${minUrgency}.`);
-  }
-
-  if (forcedUrgency && payload.urgency !== URGENCY.URGENT) {
-    throw new Error("Sexual Harassment / Discrimination tickets must be urgent.");
-  }
+  const selectedUrgency = forcedUrgency || minUrgency || URGENCY.MEDIUM;
 
   return sequelize.transaction(async (transaction) => {
     const route = await TicketRouter.assign({ category, submitter, transaction });

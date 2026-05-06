@@ -22,7 +22,7 @@ Phase 10 delivered role-adaptive dashboards with real-time analytics visualizati
 3. **Graceful degradation for role restrictions**:
 - Non-admin roles skip admin analytics calls and use ticket-based metrics directly
 - Ticket-based metrics always available (status/urgency breakdown from user's visible tickets)
-- Admin-only metrics conditionally render when analytics succeed
+- Admin-only metrics/charts are hidden from non-admin roles
 - Empty state messages for unauthorized/empty sections
 
 4. **Chart library integration** (recharts):

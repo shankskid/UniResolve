@@ -63,8 +63,8 @@ const [ticketData, commentsData, checklistData, historyResult] = await Promise.a
 
 ---
 
-### 4) Sensitive category behavior is enforced in create form
-When the category is `Sexual Harassment / Discrimination`, urgency is forced to `urgent` and anonymous mode is enforced in payload generation to match backend policy.
+### 4) Ticket creation honors backend policy defaults
+Urgency is policy-driven by category rules in the backend (submitters do not control SLA priority directly), and sensitive category behavior enforces anonymous+urgent handling.
 
 ## Files added/updated
 

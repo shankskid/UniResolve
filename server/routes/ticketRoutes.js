@@ -16,7 +16,7 @@ router.post(
     body("title").isString().trim().isLength({ min: 3, max: 300 }),
     body("description").isString().trim().isLength({ min: 10 }),
     body("category_id").isUUID(),
-    body("urgency").isIn(URGENCY_VALUES),
+    body("urgency").optional().isIn(URGENCY_VALUES),
     body("is_anonymous").optional().isBoolean()
   ],
   validate,

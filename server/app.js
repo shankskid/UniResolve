@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const path = require("path");
+const cors = require("cors");
 const { sequelize } = require("./models");
 const authRoutes = require("./routes/authRoutes");
 const publicRoutes = require("./routes/publicRoutes");
@@ -9,8 +10,14 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const featureRoutes = require("./routes/featureRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
 const reportRoutes = require("./routes/reportRoutes");
+const referenceRoutes = require("./routes/referenceRoutes");
 
 const app = express();
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || true
+  })
+);
 app.use(express.json());
 app.use("/uploads", express.static(path.resolve(process.cwd(), process.env.UPLOAD_DIR || "uploads")));
 
@@ -29,6 +36,7 @@ app.get("/health/db", async (_req, res, next) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api", publicRoutes);
+app.use("/api/reference", referenceRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api", featureRoutes);

@@ -82,6 +82,7 @@ a {
   border: 1px solid #e2e8f0;
   border-radius: 0.75rem;
   padding: 1rem;
+  overflow-wrap: anywhere;
 }
 
 .grid {
@@ -199,5 +200,15 @@ a {
   }
   .topbar-inner {
     flex-wrap: wrap;
+  }
+  .nav-links {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .nav-links .btn {
+    padding: 0.5rem 0.75rem;
+  }
+  .page {
+    padding-top: 0.9rem;
   }
 }

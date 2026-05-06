@@ -29,6 +29,7 @@ const ROLE_COPY = {
 };
 
 const STATUS_COLORS = ["#2563eb", "#7c3aed", "#ea580c", "#16a34a", "#64748b"];
+const ANALYTICS_ROLES = new Set(["campus_admin", "university_admin"]);
 
 function StatCard({ label, value, help }) {
   return (
@@ -203,14 +204,18 @@ export default function DashboardShell() {
   const [loading, setLoading] = useState(true);
   const [analytics, setAnalytics] = useState(null);
   const [analyticsError, setAnalyticsError] = useState(false);
+  const [ticketError, setTicketError] = useState(false);
 
   useEffect(() => {
     async function loadDashboard() {
       setLoading(true);
-      setAnalyticsError(false);
+      setTicketError(false);
       try {
         const ticketItems = await listTickets();
         setTickets(ticketItems);
+      } catch {
+        setTicketError(true);
+        setTickets([]);
       } finally {
         setLoading(false);
       }
@@ -221,22 +226,42 @@ export default function DashboardShell() {
 
   useEffect(() => {
     async function loadAnalytics() {
+      if (!ANALYTICS_ROLES.has(user?.role)) {
+        setAnalytics(null);
+        setAnalyticsError(false);
+        return;
+      }
+
       try {
-        const [overview, byCategory, sla, comparison] = await Promise.all([
+        const requests = [
           getOverview(),
           getByCategory(),
-          getSlaCompliance(),
-          getCampusComparison()
-        ]);
-        setAnalytics({ overview, byCategory, sla, comparison });
+          getSlaCompliance()
+        ];
+        if (user.role === "university_admin") {
+          requests.push(getCampusComparison());
+        }
+
+        const [overviewResult, byCategoryResult, slaResult, comparisonResult] = await Promise.allSettled(requests);
+        const nextAnalytics = {
+          overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
+          byCategory: byCategoryResult.status === "fulfilled" ? byCategoryResult.value : [],
+          sla: slaResult.status === "fulfilled" ? slaResult.value : null,
+          comparison:
+            user.role === "university_admin" && comparisonResult?.status === "fulfilled" ? comparisonResult.value : []
+        };
+        const hasFailures = [overviewResult, byCategoryResult, slaResult].some((result) => result.status === "rejected");
+
+        setAnalytics(nextAnalytics);
+        setAnalyticsError(hasFailures);
       } catch {
         setAnalyticsError(true);
-        setAnalytics(null);
+        setAnalytics({ overview: null, byCategory: [], sla: null, comparison: [] });
       }
     }
 
     loadAnalytics();
-  }, []);
+  }, [user?.role]);
 
   if (loading) {
     return <div className="card">Loading dashboard...</div>;
@@ -248,8 +273,10 @@ export default function DashboardShell() {
         <NavLink to="/dashboard">Overview</NavLink>
         <NavLink to="/tickets">Tickets</NavLink>
         <NavLink to="/tickets/new">Submit Ticket</NavLink>
+        <NavLink to="/notifications">Notifications</NavLink>
       </aside>
       <section className="grid" style={{ alignContent: "start" }}>
+        {ticketError && <div className="notice">Could not load your tickets right now. Please refresh in a moment.</div>}
         <div className="card">
           <h2 style={{ marginTop: 0, marginBottom: "0.5rem" }}>Welcome, {user?.name}</h2>
           <p className="muted" style={{ margin: 0 }}>

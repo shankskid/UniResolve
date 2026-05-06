@@ -20,10 +20,10 @@ Phase 10 delivered role-adaptive dashboards with real-time analytics visualizati
    - **SLA breach rate chart** — breach rate by campus (admin analytics)
 
 3. **Graceful degradation for role restrictions**:
-   - Non-admin roles get a notice: "Some analytics are unavailable for your role"
-   - Ticket-based metrics always available (status/urgency breakdown from user's visible tickets)
-   - Admin-only metrics conditionally render when analytics succeed
-   - Empty state messages for unauthorized/empty sections
+- Non-admin roles skip admin analytics calls and use ticket-based metrics directly
+- Ticket-based metrics always available (status/urgency breakdown from user's visible tickets)
+- Admin-only metrics conditionally render when analytics succeed
+- Empty state messages for unauthorized/empty sections
 
 4. **Chart library integration** (recharts):
    - PieChart for status with color coding
@@ -33,30 +33,27 @@ Phase 10 delivered role-adaptive dashboards with real-time analytics visualizati
 
 ## Why it was written this way
 
-### 1) Parallel analytics loading with error isolation
-Analytics and tickets load in separate useEffect hooks. If analytics fail (auth error for non-admins), tickets still render and the dashboard stays functional.
+### 1) Role-aware analytics loading with error isolation
+Tickets and analytics load independently. Analytics calls are only made for admin roles, and admin requests use `Promise.allSettled` so partial failures do not blank out all analytics cards/charts.
 
 ```js
 useEffect(() => {
   async function loadAnalytics() {
-    try {
-      const [overview, byCategory, sla, comparison] = await Promise.all([
-        getOverview(),
-        getByCategory(),
-        getSlaCompliance(),
-        getCampusComparison()
-      ]);
-      setAnalytics({ overview, byCategory, sla, comparison });
-    } catch {
-      setAnalyticsError(true);
+    if (!ANALYTICS_ROLES.has(user?.role)) {
       setAnalytics(null);
+      setAnalyticsError(false);
+      return;
     }
+
+    const [overviewResult, byCategoryResult, slaResult, comparisonResult] = await Promise.allSettled(requests);
+    setAnalytics(nextAnalytics);
+    setAnalyticsError(hasFailures);
   }
   loadAnalytics();
-}, []);
+}, [user?.role]);
 ```
 
-This ensures role-scoped endpoint authorization (enforced at backend) doesn't break the UI.
+This avoids guaranteed 403s for non-admin users and preserves available analytics even if one admin endpoint fails.
 
 ---
 

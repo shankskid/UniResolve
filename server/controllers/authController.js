@@ -16,12 +16,24 @@ async function register(req, res, next) {
   }
 }
 
+async function registerOfficer(req, res, next) {
+  try {
+    const user = await AuthService.registerOfficer(req.user, req.body);
+    return res.status(201).json({ user });
+  } catch (error) {
+    if (error.message) {
+      return badRequestResponse(res, error);
+    }
+    return next(error);
+  }
+}
+
 async function login(req, res, next) {
   try {
     const result = await AuthService.login(req.body);
     return res.status(200).json(result);
   } catch (error) {
-    if (error.message === "Invalid credentials.") {
+    if (error.message === "Invalid credentials." || error.message.startsWith("Account discontinued:") || error.message.startsWith("Account suspended:")) {
       return res.status(401).json({ message: error.message });
     }
     return next(error);
@@ -61,10 +73,27 @@ async function resetPassword(req, res, next) {
   }
 }
 
+async function updateOfficerStatus(req, res, next) {
+  try {
+    const user = await AuthService.updateOfficerStatus(req.user.id, req.params.id, req.body);
+    return res.status(200).json({ user });
+  } catch (error) {
+    if (["Unauthorized.", "Officer not found.", "You do not supervise this officer."].includes(error.message)) {
+      return res.status(403).json({ message: error.message });
+    }
+    if (error.message.includes("Reason is required") || error.message === "Invalid status update.") {
+      return badRequestResponse(res, error);
+    }
+    return next(error);
+  }
+}
+
 module.exports = {
   register,
+  registerOfficer,
   login,
   me,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  updateOfficerStatus
 };

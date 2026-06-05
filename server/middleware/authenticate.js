@@ -18,8 +18,7 @@ async function authenticate(req, res, next) {
 
     req.user = {
       id: user.id,
-      role: user.role,
-      campus_id: user.campus_id
+      role: user.role
     };
 
     return next();

@@ -3,9 +3,17 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const { ROLES } = require("@uniresolve/shared");
-const { sequelize, User, Department, Hall, OfficerScope, PasswordResetToken } = require("../models");
+const {
+  sequelize,
+  Department,
+  Hall,
+  OfficerAssignment,
+  OverseerAssignment,
+  PasswordResetToken,
+  User
+} = require("../models");
 
-const PUBLIC_USER_TYPES = [ROLES.STUDENT, ROLES.STAFF, ROLES.LECTURER];
+const PUBLIC_USER_TYPES = [ROLES.STUDENT, ROLES.STAFF];
 const DEFAULT_RESET_EXPIRY_MINUTES = Number(process.env.RESET_TOKEN_EXPIRY_MINUTES || 60);
 
 function sanitizeUser(user) {
@@ -18,8 +26,10 @@ function sanitizeUser(user) {
     registration_number: user.registration_number,
     department_id: user.department_id,
     hall_id: user.hall_id,
-    campus_id: user.campus_id,
     is_active: user.is_active,
+    is_timed_out: user.is_timed_out,
+    status_reason: user.status_reason,
+    timeout_until: user.timeout_until,
     created_at: user.created_at,
     updated_at: user.updated_at
   };
@@ -29,7 +39,6 @@ function createJwtPayload(user, scopes) {
   return {
     id: user.id,
     role: user.role,
-    campus_id: user.campus_id,
     scope: scopes.map((scope) => ({
       type: scope.scope_type,
       id: scope.scope_id
@@ -53,7 +62,6 @@ async function register(input) {
     email,
     password,
     user_type,
-    faculty_id,
     department_id,
     hall_id,
     registration_number,
@@ -64,17 +72,9 @@ async function register(input) {
     throw new Error("Invalid user_type.");
   }
 
-  if (Object.hasOwn(input, "campus_id")) {
-    throw new Error("campus_id must not be provided.");
-  }
-
   const department = await Department.findByPk(department_id);
   if (!department) {
     throw new Error("Selected department does not exist.");
-  }
-
-  if (department.faculty_id !== faculty_id) {
-    throw new Error("Department does not belong to the selected faculty.");
   }
 
   let hall = null;
@@ -91,9 +91,6 @@ async function register(input) {
       hall = await Hall.findByPk(hall_id);
       if (!hall) {
         throw new Error("Selected hall does not exist.");
-      }
-      if (hall.campus_id !== department.campus_id) {
-        throw new Error("Students cannot register with a hall from a different campus.");
       }
     }
   } else if (hall_id) {
@@ -129,8 +126,7 @@ async function register(input) {
         user_type,
         registration_number: registrationNumberToUse,
         department_id,
-        hall_id: hall ? hall.id : null,
-        campus_id: department.campus_id
+        hall_id: hall ? hall.id : null
       },
       { transaction }
     )
@@ -139,10 +135,105 @@ async function register(input) {
   return sanitizeUser(user);
 }
 
+async function registerOfficer(overseer, input) {
+  if (!overseer || overseer.role !== ROLES.OVERSEER) {
+    throw new Error("Only overseer can register officers.");
+  }
+
+  const { name, email, password, scope_type, scope_ids } = input;
+  if (!["department", "hall"].includes(scope_type)) {
+    throw new Error("Officer assignments must be scoped to departments or halls.");
+  }
+  if (!Array.isArray(scope_ids) || scope_ids.length !== 2) {
+    throw new Error("Officers must be assigned exactly two scopes.");
+  }
+  const uniqueScopeIds = [...new Set(scope_ids)];
+  if (uniqueScopeIds.length !== 2) {
+    throw new Error("Officer assignments must be two distinct scopes.");
+  }
+
+  if (scope_type === "department") {
+    const departments = await Department.findAll({ where: { id: uniqueScopeIds } });
+    if (departments.length !== 2) {
+      throw new Error("Selected departments do not exist.");
+    }
+  }
+
+  if (scope_type === "hall") {
+    const halls = await Hall.findAll({ where: { id: uniqueScopeIds } });
+    if (halls.length !== 2) {
+      throw new Error("Selected halls do not exist.");
+    }
+  }
+
+  const existingAssignments = await OfficerAssignment.findAll({
+    where: { scope_type, scope_id: uniqueScopeIds },
+    attributes: ["scope_id"]
+  });
+  if (existingAssignments.length) {
+    throw new Error("One or more selected scopes are already assigned to another officer.");
+  }
+
+  const emailToUse = email.toLowerCase();
+  const existingUser = await User.findOne({ where: { email: emailToUse } });
+  if (existingUser) {
+    throw new Error("Email is already in use.");
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  const user = await sequelize.transaction(async (transaction) => {
+    const created = await User.create(
+      {
+        name,
+        email: emailToUse,
+        password_hash: passwordHash,
+        role: ROLES.OFFICER,
+        user_type: null,
+        registration_number: null,
+        department_id: null,
+        hall_id: null
+      },
+      { transaction }
+    );
+
+    await OverseerAssignment.create(
+      { overseer_id: overseer.id, officer_id: created.id },
+      { transaction }
+    );
+    await OfficerAssignment.bulkCreate(
+      uniqueScopeIds.map((scope_id) => ({
+        officer_id: created.id,
+        scope_type,
+        scope_id
+      })),
+      { transaction }
+    );
+
+    return created;
+  });
+
+  return sanitizeUser(user);
+}
+
 async function login({ email, password }) {
   const user = await User.findOne({ where: { email: email.toLowerCase() } });
-  if (!user || !user.is_active) {
+  if (!user) {
     throw new Error("Invalid credentials.");
+  }
+  if (!user.is_active) {
+    throw new Error(`Account discontinued: ${user.status_reason || 'Administrative action'}`);
+  }
+
+  if (user.is_timed_out) {
+    if (user.timeout_until && new Date() > new Date(user.timeout_until)) {
+      // Timeout has expired. Auto-restore.
+      user.is_timed_out = false;
+      user.status_reason = null;
+      user.timeout_until = null;
+      await user.save();
+    } else {
+      throw new Error(`Account suspended: ${user.status_reason || 'Administrative action'}. Timeout active until ${user.timeout_until ? new Date(user.timeout_until).toLocaleString() : 'lifted by an overseer'}.`);
+    }
   }
 
   const validPassword = await bcrypt.compare(password, user.password_hash);
@@ -150,8 +241,7 @@ async function login({ email, password }) {
     throw new Error("Invalid credentials.");
   }
 
-  const scopes = await OfficerScope.findAll({ where: { user_id: user.id } });
-  const tokenPayload = createJwtPayload(user, scopes);
+  const tokenPayload = createJwtPayload(user, []);
   const token = signToken(tokenPayload);
 
   return {
@@ -229,10 +319,53 @@ async function resetPassword({ token, new_password }) {
   return { message: "Password reset successful." };
 }
 
+async function updateOfficerStatus(managerId, officerId, payload) {
+  const manager = await User.findByPk(managerId);
+  if (!manager || !["overseer", "superadmin"].includes(manager.role)) {
+    throw new Error("Unauthorized.");
+  }
+
+  const officer = await User.findByPk(officerId);
+  if (!officer || officer.role !== "officer") {
+    throw new Error("Officer not found.");
+  }
+
+  if (manager.role === "overseer") {
+    const isSupervised = await OverseerAssignment.findOne({
+      where: { overseer_id: manager.id, officer_id: officer.id }
+    });
+    if (!isSupervised) {
+      throw new Error("You do not supervise this officer.");
+    }
+  }
+
+  const { status, reason } = payload;
+  let updateData = {};
+
+  if (status === "active") {
+    updateData = { is_active: true, is_timed_out: false, status_reason: null, timeout_until: null };
+  } else if (status === "timeout") {
+    if (!reason || !reason.trim()) throw new Error("Reason is required to timeout an officer.");
+    // 12 hours from now
+    const timeoutUntil = new Date(Date.now() + 12 * 60 * 60 * 1000);
+    updateData = { is_active: true, is_timed_out: true, status_reason: reason.trim(), timeout_until: timeoutUntil };
+  } else if (status === "discontinue") {
+    if (!reason || !reason.trim()) throw new Error("Reason is required to discontinue an officer.");
+    updateData = { is_active: false, is_timed_out: false, status_reason: reason.trim(), timeout_until: null };
+  } else {
+    throw new Error("Invalid status update.");
+  }
+
+  await officer.update(updateData);
+  return sanitizeUser(officer);
+}
+
 module.exports = {
   register,
+  registerOfficer,
   login,
   me,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  updateOfficerStatus
 };

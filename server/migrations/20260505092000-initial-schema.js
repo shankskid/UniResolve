@@ -93,7 +93,7 @@ module.exports = {
       email: { type: DataTypes.STRING(200), allowNull: false, unique: true },
       password_hash: { type: DataTypes.TEXT, allowNull: false },
       role: { type: DataTypes.ENUM(...ROLE_VALUES), allowNull: false },
-      user_type: { type: DataTypes.ENUM("student", "staff", "lecturer"), allowNull: true },
+      user_type: { type: DataTypes.ENUM("student", "staff"), allowNull: true },
       department_id: {
         type: DataTypes.UUID,
         allowNull: true,

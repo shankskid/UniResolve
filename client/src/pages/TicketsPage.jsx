@@ -1,16 +1,23 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import useTickets from "../hooks/useTickets";
 import TicketCard from "../components/TicketCard";
 
 export default function TicketsPage() {
+  const { user } = useAuth();
   const { tickets, loading, refresh } = useTickets();
   const [statusFilter, setStatusFilter] = useState("all");
+  const [urgencyFilter, setUrgencyFilter] = useState("all");
+  const canCreateTicket = ["student", "staff"].includes(user?.role);
 
   const filtered = useMemo(() => {
-    if (statusFilter === "all") return tickets;
-    return tickets.filter((ticket) => ticket.status === statusFilter);
-  }, [tickets, statusFilter]);
+    return tickets.filter((ticket) => {
+      const statusOk = statusFilter === "all" || ticket.status === statusFilter;
+      const urgencyOk = urgencyFilter === "all" || ticket.urgency === urgencyFilter;
+      return statusOk && urgencyOk;
+    });
+  }, [tickets, statusFilter, urgencyFilter]);
 
   return (
     <section className="grid">
@@ -22,27 +29,38 @@ export default function TicketsPage() {
           </p>
         </div>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <Link to="/tickets/new" className="btn btn-primary">
-            New ticket
-          </Link>
+          {canCreateTicket && (
+            <Link to="/tickets/new" className="btn btn-primary">
+              New ticket
+            </Link>
+          )}
           <button className="btn btn-secondary" onClick={refresh} type="button">
             Refresh
           </button>
         </div>
       </div>
 
-      <div className="card" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-        <label className="label" htmlFor="statusFilter" style={{ marginBottom: 0 }}>
-          Status
-        </label>
-        <select id="statusFilter" className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All</option>
-          <option value="open">Open</option>
-          <option value="in_progress">In progress</option>
-          <option value="pending_review">Pending review</option>
-          <option value="resolved">Resolved</option>
-          <option value="closed">Closed</option>
-        </select>
+      <div className="tickets-filter-bar">
+        <div className="filter-group">
+          <label className="label" htmlFor="statusFilter">Status</label>
+          <select id="statusFilter" className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="all">All statuses</option>
+            <option value="open">Open</option>
+            <option value="in_progress">In progress</option>
+            <option value="resolved">Resolved</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+        <div className="filter-group">
+          <label className="label" htmlFor="urgencyFilter">Urgency</label>
+          <select id="urgencyFilter" className="select" value={urgencyFilter} onChange={(e) => setUrgencyFilter(e.target.value)}>
+            <option value="all">All urgencies</option>
+            <option value="urgent">Urgent</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
       </div>
 
       {loading && <div className="card">Loading tickets...</div>}

@@ -1,52 +1,407 @@
-const crypto = require("crypto");
 const { Op } = require("sequelize");
-const bcrypt = require("bcrypt");
 const {
-  ANONYMOUS_SUBMISSION,
   canBeAssignedRole,
-  JURISDICTIONS,
   ROLES,
+  TICKET_SCOPE,
+  TICKET_SCOPE_VALUES,
   TICKET_STATUS,
   URGENCY
 } = require("@uniresolve/shared");
 const {
   sequelize,
-  CannedResponse,
   Category,
-  Department,
-  Hall,
-  KnowledgeBase,
-  OfficerScope,
-  ResolutionChecklist,
-  SatisfactionSurvey,
+  OfficerAssignment,
+  OverseerAssignment,
   Ticket,
   TicketAttachment,
-  TicketChecklistItem,
   TicketComment,
-  TicketEscalation,
   TicketHistory,
   User
 } = require("../models");
 const TicketRouter = require("./TicketRouter");
 const NotificationService = require("./NotificationService");
 
-const TICKET_CREATOR_ROLES = [ROLES.STUDENT, ROLES.STAFF, ROLES.LECTURER];
-const STATUS_UPDATE_ROLES = [ROLES.HALL_GRIEVANCE_OFFICER, ROLES.DEPT_GRIEVANCE_OFFICER, ROLES.CAMPUS_ADMIN, ROLES.UNIVERSITY_ADMIN];
-const ASSIGN_ROLES = [ROLES.HALL_OVERSEER, ROLES.FACULTY_OVERSEER, ROLES.CAMPUS_ADMIN, ROLES.UNIVERSITY_ADMIN];
-const ESCALATE_ROLES = [
-  ROLES.HALL_GRIEVANCE_OFFICER,
-  ROLES.DEPT_GRIEVANCE_OFFICER,
-  ROLES.HALL_OVERSEER,
-  ROLES.FACULTY_OVERSEER
+const TICKET_CREATOR_ROLES = [ROLES.STUDENT, ROLES.STAFF];
+const OFFICER_ROLES = [ROLES.OFFICER, ROLES.OVERSEER, ROLES.SUPERADMIN];
+const ACTIVE_STATUSES = [TICKET_STATUS.OPEN, TICKET_STATUS.IN_PROGRESS];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// URGENCY KEYWORD CLASSIFIER
+// Tier weights: urgent=3, high=2, medium=1
+// Thresholds: 1+ urgent hit → urgent | 2+ high hits → urgent | 1 high hit → high
+//             1+ medium hit → medium | 0 signals → low
+// Category min_urgency acts as a floor.
+// ─────────────────────────────────────────────────────────────────────────────
+const URGENCY_KEYWORDS = Object.freeze({
+  urgent: [
+    // ── Fire & Smoke / Explosion ──
+    "fire", "fires", "on fire", "burning", "flames", "flame", "ablaze", "smoldering",
+    "smoke", "smoky", "smoke alarm", "fire alarm", "fire hazard", "blaze",
+    "flammable", "combustion", "ignited", "catching fire", "heavy smoke", 
+    "thick smoke", "explosion", "blast", "detonation", "fire outbreak",
+    "building on fire", "room on fire", "laboratory fire", "electrical fire", "transformer explosion",
+
+    // ── Medical & Physical Injury ──
+    "injury", "injured", "hurt", "wound", "wounded", "bleeding", "blood",
+    "unconscious", "unresponsive", "collapse", "collapsed", "collapsing",
+    "seizure", "convulsing", "choking", "not breathing", "stopped breathing",
+    "ambulance", "medical emergency", "first aid", "ems",
+    "chest pain", "heart attack", "stroke", "fainted", "fainting",
+    "fracture", "fractured", "broken bone", "head injury", "concussion",
+    "allergic reaction", "anaphylaxis", "overdose", "poisoning",
+    "hospitalized", "hospital", "critically ill", "life threatening",
+    "life-threatening", "near death", "serious injury", "severe injury",
+    "critical injury", "severe bleeding", "bleeding heavily", "cardiac arrest", "fatality", "death", "dead body",
+
+    // ── Self-Harm & Mental Health Crisis ──
+    "suicide attempt", "attempting suicide", "suicidal", "self harm", "self-harm",
+    "overdose attempt", "jumping from building", "mental crisis", "psychiatric emergency",
+
+    // ── Gas & Chemical Hazards ──
+    "gas leak", "gas smell", "gas odor", "smell of gas", "natural gas",
+    "fumes", "toxic fumes", "chemical spill", "chemical leak",
+    "carbon monoxide", "co poisoning", "hazardous material", "hazmat",
+    "pesticide leak", "acid spill", "radioactive", "biohazard",
+    "ammonia", "chlorine", "toxic substance", "noxious",
+    "toxic gas", "hazardous chemical", "contamination",
+
+    // ── Electrical Danger ──
+    "electrocution", "electric shock", "electrical shock", "shocked by electricity",
+    "exposed wire", "exposed wires", "live wire", "live wires",
+    "sparking", "sparks", "sparking wire", "arcing", "electrical arc",
+    "short circuit", "electrical fire", "power surge overheating",
+    "melting socket", "burning socket", "burning plug", "melting wire",
+    "high voltage", "power surge", "electrical hazard", "electrical emergency",
+
+    // ── Severe Flooding & Water Emergency ──
+    "flooding", "flooded", "flood", "burst pipe", "pipe burst",
+    "water gushing", "gushing water", "water pouring", "sewage overflow",
+    "sewage spill", "sewage burst", "wastewater overflow",
+    "drain overflowing", "toilet overflowing", "water rising",
+    "completely submerged", "standing water", "waterlogged",
+    "major flooding", "campus flooding", "dam failure",
+
+    // ── Structural Collapse & Danger ──
+    "collapse", "collapsed", "collapsing", "ceiling fell", "ceiling falling",
+    "roof caving", "roof collapsed", "wall caving", "wall crack",
+    "structural damage", "structural failure", "floor cracking",
+    "building unsafe", "imminent collapse", "debris falling", "falling debris",
+    "earthquake damage", "subsidence",
+    "building collapse", "bridge collapse",
+
+    // ── Violence, Threats & Security Emergency ──
+    "assault", "assaulted", "attacked", "physical attack",
+    "robbery", "robbed", "break-in", "breaking in", "intruder", "intruders",
+    "weapon", "knife", "gun", "armed", "threat", "threatened",
+    "violence", "violent", "fight", "brawl", "rape", "sexual assault",
+    "harassment", "stalking", "intimidation", "abuse", "abusive",
+    "hostage", "kidnapping", "bomb", "explosive",
+    "danger", "dangerous", "life at risk", "unsafe",
+    "critical", "critical situation", "extreme emergency",
+    "active shooter", "shooting", "firearm", "armed attack", "stabbing", "knife attack",
+    "terrorist", "bomb threat", "murder", "attempted murder", "armed robbery",
+
+    // ── Urgent Intent Signals ──
+    "emergency", "urgent", "urgently", "immediately", "right now",
+    "cannot wait", "must act", "asap", "help", "sos",
+    "desperate", "dire", "catastrophic",
+
+    // ── Critical Combinations ──
+    "fire + hostel", "fire + residence", "gas leak + residence",
+    "weapon + student", "stabbing + student", "collapsed + unconscious",
+    "electrocution + injury", "flooding + electricity", "bomb + campus",
+    "active shooter + campus"
+  ],
+
+  high: [
+    // ── Complete Infrastructure Failures ──
+    "broken", "not working", "stopped working", "completely broken",
+    "failed", "failure", "fault", "malfunction", "malfunctioning",
+    "out of order", "not functioning", "inoperable", "non-functional",
+    "defective", "damaged beyond use", "unusable", "non-operational",
+    "ceased to work", "no longer works", "broken down",
+    "campus wide outage", "major leak",
+
+    // ── Multiple People / Widespread Impact ──
+    "multiple students", "entire floor", "whole building", "all rooms",
+    "many people", "several people", "many students", "all residents",
+    "widespread", "everyone affected", "floor wide", "floor-wide",
+    "building wide", "building-wide", "entire block", "whole hostel",
+    "entire hall", "all of us", "we all", "the whole", "everyone in",
+    "mass problem", "collective issue",
+
+    // ── Electrical Problems ──
+    "no power", "no electricity", "power cut", "power outage", "power failure",
+    "blackout", "power down", "lights out", "electricity out",
+    "flickering lights", "flickering electricity", "circuit breaker",
+    "power tripping", "power keeps going", "electricity keeps cutting",
+    "generator failed", "generator down",
+
+    // ── Water & Plumbing ──
+    "no water", "no running water", "water cut", "water supply cut",
+    "water supply off", "water failure", "no tap water", "no water supply",
+    "leak", "leaking", "leaking pipe", "water leaking", "leaking ceiling",
+    "leaking roof", "water damage", "water coming in", "seepage",
+    "no hot water", "hot water not working", "water pressure loss",
+    "water pressure very low",
+
+    // ── Internet & Connectivity ──
+    "no internet", "no wifi", "no network", "network down", "internet down",
+    "wifi down", "cannot connect", "connection lost", "internet not working",
+    "no connection", "connectivity failure", "ethernet not working",
+    "lan down", "campus network down", "total internet outage",
+
+    // ── Security Failures & Misconduct ──
+    "door not locking", "lock broken", "cannot lock", "door won't close",
+    "lock not working", "broken lock", "security breach", "door forced open",
+    "window broken", "window smashed", "gate broken",
+    "access control not working", "keypad not working", "key fob not working",
+    "locked out", "cannot enter", "access denied",
+    "unauthorized access", "unauthorized person",
+    "death threat", "harassment", "stalking", "bullying", "extortion", "blackmail", "vandalism",
+    "sexual harassment", "inappropriate touching", "sexual coercion", "sexual misconduct", "predatory behavior",
+
+    // ── Health Hazards & Residence Emergencies ──
+    "mold", "mould", "mildew", "black mold", "black mould",
+    "pests", "pest infestation", "rats", "rat", "mice", "mouse",
+    "cockroach", "cockroaches", "roach", "infestation",
+    "bed bugs", "bedbugs", "fleas", "termites",
+    "rodent", "rodents", "vermin", "snake",
+    "sewage smell", "sewage stench", "sewage gas",
+    "foul smell", "unbearable smell", "extremely smelly",
+    "contaminated water", "brown water", "dirty water from tap",
+    "unsafe room", "major mold", "flooded room", "severe water leak",
+
+    // ── Heating / Cooling Systems ──
+    "no heating", "heating failed", "heating not working", "heating broken",
+    "no air conditioning", "ac failed", "hvac failed", "ventilation failed",
+    "extremely cold", "extremely hot", "dangerously hot", "dangerously cold",
+    "pipes frozen",
+
+    // ── Fire Safety Equipment ──
+    "fire extinguisher missing", "fire extinguisher empty",
+    "smoke detector not working", "fire suppression", "sprinkler broken",
+    "emergency exit blocked", "fire exit locked", "fire escape blocked",
+
+    // ── Sanitation ──
+    "toilet blocked", "toilet not flushing", "toilet broken",
+    "sewage backup", "drain blocked", "drain clogged", "blocked drain",
+    "bathroom flooded", "bathroom not usable", "toilet out of service",
+
+    // ── Corruption & Fraud ──
+    "bribery", "bribe", "corruption", "fraud", "embezzlement", "kickback",
+    "forgery", "fake transcript", "fake certificate", "grade manipulation", "academic fraud",
+
+    // ── IT Security ──
+    "hacked", "account hacked", "data breach", "database breach",
+    "credential theft", "ransomware", "malware", "virus outbreak", "compromised account",
+
+    // ── Academic Emergencies ──
+    "graduation blocked", "missing grades", "lost grades", "results missing",
+    "exam denied", "registration blocked", "transcript unavailable",
+    "course registration failure", "clearance blocked",
+
+    // ── High Combinations ──
+    "exam + tomorrow", "graduation + blocked", "hall + blackout",
+    "hostel + no water", "harassment + lecturer", "threat + violence", "results + missing"
+  ],
+
+  medium: [
+    // ── Partial Functionality ──
+    "partially working", "partly working", "intermittent", "on and off",
+    "sometimes works", "occasionally works", "works sometimes",
+    "slow", "slower than usual", "lagging", "delayed", "sluggish",
+    "degraded", "poor performance", "reduced performance",
+    "unstable", "unreliable", "inconsistent",
+
+    // ── Minor Physical Damage ──
+    "damaged", "cracked", "crack", "chipped", "scratched", "scratch",
+    "dented", "bent", "torn", "worn", "worn out", "frayed",
+    "broken handle", "handle broken", "handle loose", "loose handle",
+    "hinge broken", "hinge loose", "broken hinge",
+    "peeling", "peeling off", "surface damage",
+
+    // ── Comfort & Environment ──
+    "noisy", "noise", "loud", "too loud", "disturbing noise",
+    "banging", "rattling", "squeaking", "creaking",
+    "cold", "too cold", "cold room", "cold water",
+    "hot", "too hot", "hot room", "overheating",
+    "temperature issue", "temperature problem",
+    "heating not adequate", "insufficient heating",
+    "air conditioning weak", "ac weak", "poor ventilation",
+    "stuffy", "poor air quality", "musty", "damp smell", "odor", "smell",
+
+    // ── Lighting ──
+    "light not working", "light out", "bulb blown", "blown bulb",
+    "no lighting", "dark corridor", "dark stairwell", "dark hallway",
+    "dim", "dim light", "flickering light", "light flickering",
+    "lamp broken", "broken light", "lights off",
+
+    // ── Minor Leaks & Water ──
+    "dripping", "drip", "slow drip", "minor leak", "small leak",
+    "occasional drip", "slight leak", "tap dripping", "faucet dripping",
+    "slow water pressure", "low water pressure",
+
+    // ── Maintenance & Wear ──
+    "needs repair", "needs maintenance", "requires maintenance",
+    "requires attention", "needs fixing", "needs to be fixed",
+    "rusted", "rust", "corroded", "corrosion",
+    "deteriorating", "degrading", "aging", "old and broken",
+    "worn parts", "worn components",
+
+    // ── Access Difficulties ──
+    "stuck", "jammed", "hard to open", "difficult to open",
+    "stiff", "door stiff", "door hard to open", "hard to close",
+    "door won't open properly", "window won't open",
+    "cannot open fully", "partially stuck",
+
+    // ── Connectivity Issues ──
+    "slow internet", "slow wifi", "weak signal", "poor signal",
+    "poor wifi", "wifi weak", "internet slow", "buffering",
+    "connection dropping", "keeps disconnecting",
+
+    // ── Facilities & Equipment ──
+    "broken chair", "broken table", "broken desk", "broken bed",
+    "mattress damaged", "mattress torn", "broken shelf",
+    "shower not working", "shower broken", "shower weak pressure",
+    "shower cold", "bath not draining", "sink not draining",
+    "washing machine broken", "dryer broken", "microwave broken",
+    "fridge not cooling", "fridge broken",
+    "printer not working", "projector not working",
+    "whiteboard damaged", "classroom equipment broken",
+
+    // ── Waste & Cleanliness ──
+    "bins full", "garbage overflowing", "waste not collected",
+    "dirty", "unclean", "hygiene issue", "cleaning needed",
+    "rubbish", "garbage", "litter",
+
+    // ── Academic Issues ──
+    "wrong marks", "incorrect marks", "missing attendance", "course conflict",
+    "exam clash", "timetable issue", "missing coursework",
+    "supervisor unavailable", "project issue", "registration issue", "appeal pending",
+
+    // ── Administrative Issues ──
+    "clearance issue", "fee issue", "delayed approval", "application delay",
+    "document delay", "lost document", "identity issue", "verification issue",
+
+    // ── Technical Problems ──
+    "system error", "website error", "portal issue", "login issue",
+    "password issue", "slow network", "printer failure", "computer malfunction",
+    "software issue", "email issue",
+
+    // ── Residence Maintenance ──
+    "broken window", "damaged furniture", "maintenance issue",
+    "water pressure issue", "room allocation issue", "internet issue",
+    "blocked drain", "faulty shower",
+
+    // ── Staff Conduct ──
+    "rude behavior", "poor service", "unprofessional conduct",
+    "lack of response", "neglect", "ignored request", "delayed response",
+
+    // ── Medium Combinations ──
+    "portal + inaccessible", "marks + incorrect", "assignment + missing",
+    "room + damaged", "staff + rude",
+
+    // ── University-Specific (Medium Priority items) ──
+    "missing marks", "missing grades", "hostel allocation", "room allocation",
+    "water shortage", "power issue", "security concern", "hall maintenance",
+    "roommate conflict", "course registration", "deferment", "transfer request",
+    "credit transfer", "transcript request", "academic appeal", "graduation clearance",
+    "counselling", "mental health", "financial aid", "bursary", "scholarship",
+    "accommodation issue"
+  ],
+
+  low: [
+    // ── Minor Facility Issues ──
+    "broken chair", "broken desk", "faded paint", "minor leak",
+    "dirty corridor", "unclean classroom", "poor lighting",
+    "noise complaint", "damaged notice board",
+
+    // ── Service Requests ──
+    "request", "suggestion", "feedback", "recommendation", "inquiry",
+    "clarification", "question", "proposal",
+
+    // ── Minor Maintenance ──
+    "replace bulb", "repair chair", "clean room", "trim grass",
+    "paint wall", "fix notice board", "adjust furniture", "replace curtain",
+
+    // ── Informational ──
+    "feature request", "enhancement", "improvement", "usability suggestion",
+    "new functionality", "general feedback",
+    
+    // ── University-Specific (Low/Informational) ──
+    "exam card", "exam slip", "exam venue", "exam timetable",
+    "supplementary exam", "special exam", "graduation list"
+  ]
+});
+
+const URGENCY_ORDER = [
+  URGENCY.LOW,
+  URGENCY.MEDIUM,
+  URGENCY.HIGH,
+  URGENCY.URGENT
 ];
-const OFFICER_OR_ADMIN_ROLES = [
-  ROLES.HALL_GRIEVANCE_OFFICER,
-  ROLES.DEPT_GRIEVANCE_OFFICER,
-  ROLES.HALL_OVERSEER,
-  ROLES.FACULTY_OVERSEER,
-  ROLES.CAMPUS_ADMIN,
-  ROLES.UNIVERSITY_ADMIN
-];
+
+function urgencyRank(level) {
+  return URGENCY_ORDER.indexOf(level);
+}
+
+/**
+ * Classify urgency from ticket text using keyword scoring.
+ * @param {string} title
+ * @param {string} description
+ * @param {string|null} categoryMinUrgency  min_urgency from the category row
+ * @returns {string} one of URGENCY values
+ */
+function classifyUrgency(title, description, categoryMinUrgency) {
+  const text = `${title} ${description}`.toLowerCase();
+
+  let urgentHits = 0;
+  let highHits = 0;
+  let mediumHits = 0;
+  let lowHits = 0;
+
+  function countHits(phrases) {
+    let hits = 0;
+    for (const phrase of phrases) {
+      if (phrase.includes("+")) {
+        // Handle combinations like "fire + hostel"
+        const parts = phrase.split("+").map((p) => p.trim());
+        if (parts.every((p) => text.includes(p))) {
+          hits++;
+        }
+      } else if (text.includes(phrase)) {
+        hits++;
+      }
+    }
+    return hits;
+  }
+
+  urgentHits = countHits(URGENCY_KEYWORDS.urgent);
+  highHits = countHits(URGENCY_KEYWORDS.high);
+  mediumHits = countHits(URGENCY_KEYWORDS.medium);
+  lowHits = countHits(URGENCY_KEYWORDS.low || []);
+
+  let result;
+  if (urgentHits >= 1) {
+    result = URGENCY.URGENT;
+  } else if (highHits >= 2) {
+    result = URGENCY.URGENT;
+  } else if (highHits >= 1) {
+    result = URGENCY.HIGH;
+  } else if (mediumHits >= 1) {
+    result = URGENCY.MEDIUM;
+  } else {
+    result = URGENCY.LOW;
+  }
+
+  // Apply category floor — the category's min_urgency can only bump UP
+  if (categoryMinUrgency && urgencyRank(categoryMinUrgency) > urgencyRank(result)) {
+    result = categoryMinUrgency;
+  }
+
+  return result;
+}
 
 function calculateSlaDeadline(urgency) {
   const now = new Date();
@@ -76,131 +431,40 @@ async function writeHistory(ticket_id, changed_by, field_changed, old_value, new
   );
 }
 
-function sanitizeSubmitter(ticketJson, viewerRole) {
-  if (!ticketJson.is_anonymous) {
-    return ticketJson;
-  }
-
-  if ([ROLES.CAMPUS_ADMIN, ROLES.UNIVERSITY_ADMIN].includes(viewerRole)) {
-    return ticketJson;
-  }
-
-  if (!ticketJson.submitter) {
-    return ticketJson;
-  }
-
-  return {
-    ...ticketJson,
-    submitter: {
-      id: ticketJson.submitter.id,
-      name: "Anonymous",
-      email: null,
-      department_id: null,
-      hall_id: null
-    }
-  };
-}
-
-async function getFacultyScopeDepartmentIds(userId) {
-  const scopes = await OfficerScope.findAll({
-    where: { user_id: userId, scope_type: "faculty" },
-    attributes: ["scope_id"]
-  });
-  if (!scopes.length) {
-    return [];
-  }
-  const facultyIds = scopes.map((scope) => scope.scope_id);
-  const departments = await Department.findAll({
-    where: { faculty_id: { [Op.in]: facultyIds } },
-    attributes: ["id"]
-  });
-  return departments.map((department) => department.id);
-}
-
-async function getFacultyOverseersForDepartment(departmentId, transaction) {
-  const department = await Department.findByPk(departmentId, {
-    attributes: ["faculty_id"],
+async function getSuperadminIds(transaction) {
+  const users = await User.findAll({
+    where: { role: ROLES.SUPERADMIN, is_active: true },
+    attributes: ["id"],
     transaction
   });
-  if (!department) {
-    return [];
-  }
-
-  const scopes = await OfficerScope.findAll({
-    where: {
-      scope_type: "faculty",
-      scope_id: department.faculty_id
-    },
-    include: [
-      {
-        model: User,
-        required: true,
-        where: {
-          role: ROLES.FACULTY_OVERSEER,
-          is_active: true
-        }
-      }
-    ],
-    transaction
-  });
-
-  return scopes.map((scope) => scope.user_id);
+  return users.map((user) => user.id);
 }
 
-async function getEscalationTargetUserIds(ticket, targetRole, transaction) {
-  if (targetRole === ROLES.HALL_OVERSEER) {
-    const users = await User.findAll({
-      where: {
-        role: ROLES.HALL_OVERSEER,
-        campus_id: ticket.campus_id,
-        is_active: true
-      },
-      attributes: ["id"],
-      transaction
-    });
-    return users.map((userRecord) => userRecord.id);
-  }
-
-  if (targetRole === ROLES.FACULTY_OVERSEER) {
-    const submitterDepartmentId = ticket.submitter?.department_id;
-    if (!submitterDepartmentId) {
-      return [];
-    }
-    return getFacultyOverseersForDepartment(submitterDepartmentId, transaction);
-  }
-
-  if (targetRole === ROLES.UNIVERSITY_ADMIN) {
-    const users = await User.findAll({
-      where: {
-        role: ROLES.UNIVERSITY_ADMIN,
-        is_active: true
-      },
-      attributes: ["id"],
-      transaction
-    });
-    return users.map((userRecord) => userRecord.id);
-  }
-
-  return [];
+async function getSupervisedOfficerIds(overseerId) {
+  const rows = await OverseerAssignment.findAll({
+    where: { overseer_id: overseerId },
+    attributes: ["officer_id"]
+  });
+  return rows.map((row) => row.officer_id);
 }
 
 async function getAccessibleTicketFilter(user) {
-  if ([ROLES.STUDENT, ROLES.STAFF, ROLES.LECTURER].includes(user.role)) {
+  if ([ROLES.STUDENT, ROLES.STAFF].includes(user.role)) {
     return { submitter_id: user.id };
   }
-  if ([ROLES.HALL_GRIEVANCE_OFFICER, ROLES.DEPT_GRIEVANCE_OFFICER].includes(user.role)) {
+
+  if (user.role === ROLES.OFFICER) {
     return { assigned_to: user.id };
   }
-  if (user.role === ROLES.HALL_OVERSEER) {
-    return { campus_id: user.campus_id, jurisdiction_type: JURISDICTIONS.HALL };
+
+  if (user.role === ROLES.OVERSEER) {
+    const officerIds = await getSupervisedOfficerIds(user.id);
+    if (!officerIds.length) {
+      return { assigned_to: { [Op.in]: [] } };
+    }
+    return { assigned_to: { [Op.in]: officerIds } };
   }
-  if (user.role === ROLES.FACULTY_OVERSEER) {
-    const departmentIds = await getFacultyScopeDepartmentIds(user.id);
-    return { jurisdiction_type: JURISDICTIONS.DEPARTMENT, "$submitter.department_id$": { [Op.in]: departmentIds } };
-  }
-  if (user.role === ROLES.CAMPUS_ADMIN) {
-    return { campus_id: user.campus_id };
-  }
+
   return {};
 }
 
@@ -213,8 +477,9 @@ async function getTicketScopedOrThrow(ticketId, user) {
       {
         model: User,
         as: "submitter",
-        attributes: ["id", "name", "email", "department_id", "hall_id", "campus_id"]
-      }
+        attributes: ["id", "name", "email", "role", "department_id", "hall_id"]
+      },
+      { model: User, as: "assignee", attributes: ["id", "name", "email", "role"] }
     ],
     order: [["created_at", "DESC"]]
   });
@@ -224,178 +489,77 @@ async function getTicketScopedOrThrow(ticketId, user) {
   return ticket;
 }
 
-async function buildTicketChecklist(ticketId, categoryId, transaction) {
-  const templateSteps = await ResolutionChecklist.findAll({
-    where: { category_id: categoryId },
-    order: [["step_order", "ASC"]],
-    transaction
-  });
-
-  for (const step of templateSteps) {
-    await TicketChecklistItem.create(
-      {
-        ticket_id: ticketId,
-        checklist_id: step.id
-      },
-      { transaction }
-    );
+function normalizeScope(payload, category) {
+  const requested = payload.scope_type || payload.issue_area || category?.jurisdiction_type;
+  if (!TICKET_SCOPE_VALUES.includes(requested)) {
+    throw new Error("Invalid ticket issue area.");
   }
+  if (category && category.jurisdiction_type !== requested) {
+    throw new Error("Category does not match the selected issue area.");
+  }
+  return requested;
 }
 
-async function createTicketCore(submitter, payload, forcedAnonymous = false) {
+// urgency is now auto-classified; this stub is kept for reference only
+function normalizeUrgency() {
+  return URGENCY.MEDIUM;
+}
+
+async function createTicket(user, payload) {
+  if (!TICKET_CREATOR_ROLES.includes(user.role)) {
+    throw new Error("Only students or staff can create tickets.");
+  }
+
+  const submitter = await User.findByPk(user.id);
   const category = await Category.findByPk(payload.category_id);
   if (!submitter || !category) {
     throw new Error("Invalid submitter or category.");
   }
 
-  const forcedUrgency = category.name === "Sexual Harassment / Discrimination" ? URGENCY.URGENT : null;
-  const minUrgency = category.min_urgency;
-  const selectedUrgency = forcedUrgency || minUrgency || URGENCY.MEDIUM;
+  const scopeType = normalizeScope(payload, category);
+  const selectedUrgency = classifyUrgency(payload.title, payload.description, category.min_urgency);
+  const sla_deadline = calculateSlaDeadline(selectedUrgency);
 
   return sequelize.transaction(async (transaction) => {
-    const route = await TicketRouter.assign({ category, submitter, transaction });
-    const sla_deadline = calculateSlaDeadline(selectedUrgency);
-
+    const route = await TicketRouter.assign({ scopeType, submitter, transaction });
     const ticket = await Ticket.create(
       {
         title: payload.title,
         description: payload.description,
+        status: TICKET_STATUS.OPEN,
         urgency: selectedUrgency,
         category_id: category.id,
         submitter_id: submitter.id,
-        assigned_to: route.assignee ? route.assignee.id : null,
-        campus_id: submitter.campus_id,
-        jurisdiction_type: route.jurisdiction,
-        is_anonymous: forcedAnonymous || Boolean(payload.is_anonymous),
+        assigned_to: route.assignee.id,
+        jurisdiction_type: route.scope_type,
+        scope_type: route.scope_type,
+        scope_id: route.scope_id,
+        is_anonymous: false,
         sla_deadline
       },
       { transaction }
     );
 
-    await buildTicketChecklist(ticket.id, category.id, transaction);
-    await writeHistory(ticket.id, "SYSTEM", "assigned_to", null, route.assignee ? route.assignee.id : null, transaction);
-    await writeHistory(ticket.id, "SYSTEM", "sla_deadline", null, sla_deadline.toISOString(), transaction);
+    await writeHistory(ticket.id, "SYSTEM", "created", null, ticket.id, transaction);
+    await writeHistory(ticket.id, "SYSTEM", "assigned_to", null, route.assignee.id, transaction);
+    await writeHistory(ticket.id, "SYSTEM", "urgency", null, selectedUrgency, transaction);
 
-    if (route.assignee) {
-      await NotificationService.notifyMany(
-        [route.assignee.id],
-        {
-          ticket_id: ticket.id,
-          type: "ticket_assigned",
-          message: `You have been assigned ticket ${ticket.id}.`
-        },
-        transaction
-      );
-    }
-
-    if (route.fallbackEscalation) {
-      await TicketEscalation.create(
-        {
-          ticket_id: ticket.id,
-          escalated_by: submitter.id,
-          escalated_to_role: ROLES.CAMPUS_ADMIN,
-          reason: "Auto-escalated due to unavailable direct assignee."
-        },
-        { transaction }
-      );
-
-      const campusAdmins = await OfficerScope.findAll({
-        where: { scope_type: "campus", scope_id: submitter.campus_id },
-        include: [{ model: User, required: true, where: { role: ROLES.CAMPUS_ADMIN, is_active: true } }],
-        transaction
-      });
-
-      for (const adminScope of campusAdmins) {
-        await NotificationService.createInAppNotification(
-          {
-            user_id: adminScope.user_id,
-            ticket_id: ticket.id,
-            type: "routing_fallback",
-            message: `Ticket ${ticket.id} was auto-escalated due to missing assignee.`
-          },
-          transaction
-        );
-      }
-    }
-
-    if (category.name === "Sexual Harassment / Discrimination") {
-      const universityAdmins = await User.findAll({
-        where: {
-          role: ROLES.UNIVERSITY_ADMIN,
-          is_active: true
-        },
-        attributes: ["id"],
-        transaction
-      });
-
-      await NotificationService.notifyMany(
-        universityAdmins.map((record) => record.id),
-        {
-          ticket_id: ticket.id,
-          type: "harassment_alert",
-          message: `Urgent harassment/discrimination ticket ${ticket.id} requires immediate attention.`
-        },
-        transaction
-      );
-    }
+    await NotificationService.notifyMany(
+      [route.assignee.id],
+      {
+        ticket_id: ticket.id,
+        type: "ticket_assigned",
+        message: `You have been assigned ticket ${ticket.id}.`
+      },
+      transaction
+    );
 
     return ticket;
   });
 }
 
-async function createTicket(user, payload) {
-  if (!TICKET_CREATOR_ROLES.includes(user.role)) {
-    throw new Error("Only students, staff, or lecturers can create tickets.");
-  }
-  const submitter = await User.findByPk(user.id);
-  return createTicketCore(submitter, payload, false);
-}
-
-async function createAnonymousTicket(payload) {
-  const category = await Category.findByPk(payload.category_id);
-  if (!category) {
-    throw new Error("Invalid submitter or category.");
-  }
-  if (!ANONYMOUS_SUBMISSION.SENSITIVE_CATEGORIES.includes(category.name)) {
-    throw new Error("Anonymous submission is limited to sensitive categories.");
-  }
-
-  const department = await Department.findByPk(payload.department_id);
-  if (!department) {
-    throw new Error("Selected department does not exist.");
-  }
-
-  if (payload.hall_id) {
-    const hall = await Hall.findByPk(payload.hall_id);
-    if (!hall) {
-      throw new Error("Selected hall does not exist.");
-    }
-    if (hall.campus_id !== department.campus_id) {
-      throw new Error("Students cannot register with a hall from a different campus.");
-    }
-  }
-
-  const contactEmail = payload.contact_email && payload.contact_email.trim()
-    ? payload.contact_email.trim().toLowerCase()
-    : `anonymous.${Date.now()}.${crypto.randomBytes(4).toString("hex")}@uniresolve.local`;
-
-  const randomPassword = crypto.randomBytes(24).toString("hex");
-  const passwordHash = await bcrypt.hash(randomPassword, 12);
-  const registration = `ANON-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
-
-  const submitter = await User.create({
-    name: "Anonymous Submitter",
-    email: contactEmail,
-    password_hash: passwordHash,
-    role: ROLES.STUDENT,
-    user_type: ROLES.STUDENT,
-    registration_number: registration,
-    department_id: department.id,
-    hall_id: payload.hall_id || null,
-    campus_id: department.campus_id
-  });
-
-  return createTicketCore(submitter, { ...payload, urgency: URGENCY.URGENT }, true);
+async function createAnonymousTicket() {
+  throw new Error("Anonymous submission is not enabled in the simplified workflow.");
 }
 
 async function listTickets(user) {
@@ -407,36 +571,44 @@ async function listTickets(user) {
       {
         model: User,
         as: "submitter",
-        attributes: ["id", "name", "email", "department_id", "hall_id", "campus_id"]
-      }
+        attributes: ["id", "name", "email", "role", "department_id", "hall_id"]
+      },
+      { model: User, as: "assignee", attributes: ["id", "name", "email", "role"] }
     ],
-    order: [["created_at", "DESC"]]
+    order: [
+      ["urgency", "DESC"],
+      ["created_at", "DESC"]
+    ]
   });
 
-  return tickets.map((ticket) => sanitizeSubmitter(ticket.toJSON(), user.role));
+  return tickets.map((ticket) => ticket.toJSON());
 }
 
 async function getTicket(user, ticketId) {
   const ticket = await getTicketScopedOrThrow(ticketId, user);
-  return sanitizeSubmitter(ticket.toJSON(), user.role);
+  return ticket.toJSON();
+}
+
+function canUpdateStatus(user, ticket, nextStatus) {
+  if (user.role === ROLES.SUPERADMIN) {
+    return true;
+  }
+
+  if (user.role === ROLES.OFFICER && ticket.assigned_to === user.id) {
+    return [TICKET_STATUS.IN_PROGRESS, TICKET_STATUS.RESOLVED].includes(nextStatus);
+  }
+
+  if ([ROLES.STUDENT, ROLES.STAFF].includes(user.role) && ticket.submitter_id === user.id) {
+    return ticket.status === TICKET_STATUS.RESOLVED && nextStatus === TICKET_STATUS.CLOSED;
+  }
+
+  return false;
 }
 
 async function updateStatus(user, ticketId, status) {
-  if (!STATUS_UPDATE_ROLES.includes(user.role)) {
-    throw new Error("Role cannot update ticket status.");
-  }
   const ticket = await getTicketScopedOrThrow(ticketId, user);
-
-  if (status === TICKET_STATUS.RESOLVED) {
-    const incomplete = await TicketChecklistItem.count({
-      where: {
-        ticket_id: ticket.id,
-        is_completed: false
-      }
-    });
-    if (incomplete > 0) {
-      throw new Error("Tickets cannot be resolved with incomplete checklist items.");
-    }
+  if (!canUpdateStatus(user, ticket, status)) {
+    throw new Error("Role cannot update ticket status.");
   }
 
   const previous = ticket.status;
@@ -456,7 +628,7 @@ async function updateStatus(user, ticketId, status) {
     await writeHistory(ticket.id, user.id, "status", previous, status, transaction);
 
     await NotificationService.notifyMany(
-      [ticket.submitter_id],
+      [ticket.submitter_id, ticket.assigned_to],
       {
         ticket_id: ticket.id,
         type: "ticket_status_updated",
@@ -465,41 +637,37 @@ async function updateStatus(user, ticketId, status) {
       transaction
     );
 
-    if ([TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].includes(status)) {
-      const submitter = await User.findByPk(ticket.submitter_id, {
-        attributes: ["email"],
-        transaction
-      });
-
-      if (submitter?.email) {
-        await NotificationService.sendEmail({
-          to: submitter.email,
-          subject: `UniResolve Ticket ${ticket.id} ${status}`,
-          text: `Your ticket ${ticket.id} has been marked as ${status}.`
-        });
-      }
-    }
-
     return getTicket(user, ticket.id);
   });
 }
 
+async function canAssignToOfficer(user, ticket, officerId) {
+  const assignee = await User.findByPk(officerId);
+  if (!assignee || !assignee.is_active || !canBeAssignedRole(assignee.role) || assignee.role !== ROLES.OFFICER) {
+    throw new Error("Assignee must be an active officer.");
+  }
+
+  if (user.role === ROLES.SUPERADMIN) {
+    return assignee;
+  }
+
+  if (user.role === ROLES.OVERSEER) {
+    const officerIds = await getSupervisedOfficerIds(user.id);
+    if (officerIds.includes(ticket.assigned_to) && officerIds.includes(officerId)) {
+      return assignee;
+    }
+  }
+
+  throw new Error("Role cannot assign tickets.");
+}
+
 async function assignTicket(user, ticketId, assignedTo) {
-  if (!ASSIGN_ROLES.includes(user.role)) {
+  if (![ROLES.OVERSEER, ROLES.SUPERADMIN].includes(user.role)) {
     throw new Error("Role cannot assign tickets.");
   }
 
   const ticket = await getTicketScopedOrThrow(ticketId, user);
-  const assignee = await User.findByPk(assignedTo);
-  if (!assignee || !assignee.is_active) {
-    throw new Error("Assignee does not exist or is inactive.");
-  }
-  if (!canBeAssignedRole(assignee.role)) {
-    throw new Error("Overseers cannot be assigned tickets.");
-  }
-  if (user.role === ROLES.CAMPUS_ADMIN && assignee.campus_id !== user.campus_id) {
-    throw new Error("Campus admin can only assign within their campus.");
-  }
+  const assignee = await canAssignToOfficer(user, ticket, assignedTo);
 
   return sequelize.transaction(async (transaction) => {
     const previous = ticket.assigned_to;
@@ -521,59 +689,30 @@ async function assignTicket(user, ticketId, assignedTo) {
   });
 }
 
-function getEscalationTargetRole(ticket) {
-  if (ticket.jurisdiction_type === JURISDICTIONS.HALL) {
-    return ROLES.HALL_OVERSEER;
-  }
-  if (ticket.jurisdiction_type === JURISDICTIONS.DEPARTMENT) {
-    return ROLES.FACULTY_OVERSEER;
-  }
-  if (ticket.jurisdiction_type === JURISDICTIONS.CAMPUS) {
-    return ROLES.UNIVERSITY_ADMIN;
-  }
-  return ROLES.UNIVERSITY_ADMIN;
-}
-
 async function escalateTicket(user, ticketId, reason) {
-  if (!ESCALATE_ROLES.includes(user.role)) {
+  if (![ROLES.OFFICER, ROLES.OVERSEER].includes(user.role)) {
     throw new Error("Role cannot escalate tickets.");
   }
+
   const ticket = await getTicketScopedOrThrow(ticketId, user);
-  const targetRole = getEscalationTargetRole(ticket);
+  const superadminIds = await getSuperadminIds();
 
-  return sequelize.transaction(async (transaction) => {
-    await TicketEscalation.create(
-      {
-        ticket_id: ticket.id,
-        escalated_by: user.id,
-        escalated_to_role: targetRole,
-        reason
-      },
-      { transaction }
-    );
-    await writeHistory(ticket.id, user.id, "escalation", null, `${targetRole}:${reason}`, transaction);
-
-    const targetUserIds = await getEscalationTargetUserIds(ticket, targetRole, transaction);
-    await NotificationService.notifyMany(
-      targetUserIds,
-      {
-        ticket_id: ticket.id,
-        type: "ticket_escalated",
-        message: `Ticket ${ticket.id} was escalated to ${targetRole}.`
-      },
-      transaction
-    );
-
-    return getTicket(user, ticket.id);
+  await NotificationService.notifyMany(superadminIds, {
+    ticket_id: ticket.id,
+    type: "ticket_escalated",
+    message: `Ticket ${ticket.id} was escalated: ${reason}`
   });
+
+  await writeHistory(ticket.id, user.id, "escalation", null, reason);
+  return getTicket(user, ticket.id);
 }
 
 async function addComment(user, ticketId, payload) {
   const ticket = await getTicketScopedOrThrow(ticketId, user);
   const isInternal = Boolean(payload.is_internal);
 
-  if (isInternal && !OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
-    throw new Error("Only officers and admins can create internal comments.");
+  if (isInternal && !OFFICER_ROLES.includes(user.role)) {
+    throw new Error("Only officers, overseers, and superadmin can create internal comments.");
   }
 
   return sequelize.transaction(async (transaction) => {
@@ -587,7 +726,12 @@ async function addComment(user, ticketId, payload) {
       { transaction }
     );
 
-    const recipients = [ticket.submitter_id, ticket.assigned_to].filter(Boolean);
+    // Internal notes must NOT notify the submitter — they are officer-only.
+    // Public comments notify both the submitter and the assigned officer.
+    const recipients = isInternal
+      ? [ticket.assigned_to].filter(Boolean)
+      : [ticket.submitter_id, ticket.assigned_to].filter(Boolean);
+
     await NotificationService.notifyMany(
       recipients,
       {
@@ -605,7 +749,7 @@ async function addComment(user, ticketId, payload) {
 async function getComments(user, ticketId) {
   await getTicketScopedOrThrow(ticketId, user);
   const where = { ticket_id: ticketId };
-  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+  if (!OFFICER_ROLES.includes(user.role)) {
     where.is_internal = false;
   }
 
@@ -618,17 +762,18 @@ async function getComments(user, ticketId) {
 
 async function addAttachment(user, ticketId, file) {
   await getTicketScopedOrThrow(ticketId, user);
+  const path = require("path");
   return TicketAttachment.create({
     ticket_id: ticketId,
     uploader_id: user.id,
-    file_url: file.path,
-    file_name: file.originalname,
+    file_url: path.basename(file.path),   // disk filename only, e.g. "1717000000000-photo.jpg"
+    file_name: file.originalname,          // human-readable original name
     file_size: file.size
   });
 }
 
 async function getHistory(user, ticketId) {
-  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
+  if (!OFFICER_ROLES.includes(user.role)) {
     throw new Error("Role cannot view ticket history.");
   }
   await getTicketScopedOrThrow(ticketId, user);
@@ -638,112 +783,189 @@ async function getHistory(user, ticketId) {
   });
 }
 
-async function completeChecklistItem(user, ticketId, itemId, isCompleted) {
-  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
-    throw new Error("Role cannot update checklist items.");
-  }
-  await getTicketScopedOrThrow(ticketId, user);
-  const item = await TicketChecklistItem.findOne({
-    where: { id: itemId, ticket_id: ticketId }
+async function listOfficerAssignments() {
+  return OfficerAssignment.findAll({
+    include: [{ model: User, as: "officer", attributes: ["id", "name", "email", "role"] }],
+    order: [["scope_type", "ASC"]]
   });
-  if (!item) {
-    throw new Error("Checklist item not found.");
-  }
-
-  item.is_completed = Boolean(isCompleted);
-  item.completed_by = isCompleted ? user.id : null;
-  item.completed_at = isCompleted ? new Date() : null;
-  await item.save();
-
-  return item;
 }
 
-async function submitSurvey(user, payload) {
-  if (user.role !== ROLES.STUDENT) {
-    throw new Error("Only students can submit surveys.");
+async function listOverseerAssignments() {
+  return OverseerAssignment.findAll({
+    include: [
+      { model: User, as: "overseer", attributes: ["id", "name", "email", "role"] },
+      { model: User, as: "officer", attributes: ["id", "name", "email", "role"] }
+    ],
+    order: [["created_at", "ASC"]]
+  });
+}
+
+async function listManagedUsers(user) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can manage users.");
+  }
+  return User.findAll({
+    attributes: ["id", "name", "email", "role", "user_type", "department_id", "hall_id", "is_active"],
+    order: [["role", "ASC"], ["name", "ASC"]]
+  });
+}
+
+async function createOfficerAssignment(user, payload) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can manage assignments.");
+  }
+  if (!TICKET_SCOPE_VALUES.includes(payload.scope_type)) {
+    throw new Error("Invalid assignment scope.");
   }
 
-  const ticket = await Ticket.findByPk(payload.ticket_id);
-  if (!ticket) {
+  const officer = await User.findByPk(payload.officer_id);
+  if (!officer || !officer.is_active || officer.role !== ROLES.OFFICER) {
+    throw new Error("Assignee must be an active officer.");
+  }
+
+  const existing = await OfficerAssignment.findOne({
+    where: { scope_type: payload.scope_type, scope_id: payload.scope_id }
+  });
+  if (existing) {
+    existing.officer_id = officer.id;
+    await existing.save();
+    return existing;
+  }
+
+  return OfficerAssignment.create({
+    officer_id: officer.id,
+    scope_type: payload.scope_type,
+    scope_id: payload.scope_id
+  });
+}
+
+async function createOverseerAssignment(user, payload) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can manage assignments.");
+  }
+
+  const overseer = await User.findByPk(payload.overseer_id);
+  if (!overseer || !overseer.is_active || overseer.role !== ROLES.OVERSEER) {
+    throw new Error("Overseer must be an active overseer.");
+  }
+
+  const officer = await User.findByPk(payload.officer_id);
+  if (!officer || !officer.is_active || officer.role !== ROLES.OFFICER) {
+    throw new Error("Officer must be an active officer.");
+  }
+
+  const existing = await OverseerAssignment.findOne({
+    where: { overseer_id: overseer.id, officer_id: officer.id }
+  });
+  if (existing) {
+    throw new Error("Overseer is already assigned to that officer.");
+  }
+
+  return OverseerAssignment.create({
+    overseer_id: overseer.id,
+    officer_id: officer.id
+  });
+}
+
+async function createCategory(user, payload) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can manage categories.");
+  }
+  if (!TICKET_SCOPE_VALUES.includes(payload.scope_type)) {
+    throw new Error("Invalid category scope.");
+  }
+  if (payload.min_urgency && !Object.values(URGENCY).includes(payload.min_urgency)) {
+    throw new Error("Invalid minimum urgency.");
+  }
+
+  return Category.create({
+    name: payload.name,
+    jurisdiction_type: payload.scope_type,
+    min_urgency: payload.min_urgency || null
+  });
+}
+
+async function getOfficerQueueStats(user) {
+  if (![ROLES.OVERSEER, ROLES.SUPERADMIN].includes(user.role)) {
+    throw new Error("Role cannot access officer queue stats.");
+  }
+
+  const officerWhere = user.role === ROLES.SUPERADMIN
+    ? { role: ROLES.OFFICER }
+    : { id: { [Op.in]: await getSupervisedOfficerIds(user.id) }, role: ROLES.OFFICER };
+
+  const officers = await User.findAll({
+    where: officerWhere,
+    attributes: ["id", "name", "email", "role", "is_active", "is_timed_out", "status_reason"],
+    order: [["name", "ASC"]]
+  });
+
+  const output = [];
+  for (const officer of officers) {
+    const tickets = await Ticket.findAll({ where: { assigned_to: officer.id } });
+    output.push({
+      officer: officer.toJSON(),
+      total: tickets.length,
+      active: tickets.filter((ticket) => ACTIVE_STATUSES.includes(ticket.status)).length,
+      resolved: tickets.filter((ticket) => [TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].includes(ticket.status)).length,
+      urgent: tickets.filter((ticket) => ticket.urgency === URGENCY.URGENT && ACTIVE_STATUSES.includes(ticket.status)).length
+    });
+  }
+  return output;
+}
+
+async function updateUrgency(user, ticketId, newUrgency) {
+  if (!OFFICER_ROLES.includes(user.role)) {
+    throw new Error("Only officers, overseers, and superadmin can adjust urgency.");
+  }
+  if (!Object.values(URGENCY).includes(newUrgency)) {
+    throw new Error("Invalid urgency level.");
+  }
+
+  const ticket = await getTicketScopedOrThrow(ticketId, user);
+  const previous = ticket.urgency;
+
+  if (previous === newUrgency) {
+    return ticket.toJSON();
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    ticket.urgency = newUrgency;
+    // Recalculate SLA deadline from the new urgency level
+    ticket.sla_deadline = calculateSlaDeadline(newUrgency);
+    await ticket.save({ transaction });
+    await writeHistory(ticket.id, user.id, "urgency", previous, newUrgency, transaction);
+    return getTicket(user, ticket.id);
+  });
+}
+
+async function deleteOfficerAssignment(user, assignmentId) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can delete assignments.");
+  }
+  const row = await OfficerAssignment.findByPk(assignmentId);
+  if (!row) {
     throw new Error("Ticket not found or inaccessible.");
   }
-  if (ticket.submitter_id !== user.id) {
-    throw new Error("Survey can only be submitted by the ticket submitter.");
-  }
-  if (![TICKET_STATUS.RESOLVED, TICKET_STATUS.CLOSED].includes(ticket.status)) {
-    throw new Error("Survey can only be submitted for resolved or closed tickets.");
-  }
-
-  const existingSurvey = await SatisfactionSurvey.findOne({ where: { ticket_id: payload.ticket_id } });
-  if (existingSurvey) {
-    throw new Error("Survey already submitted for this ticket.");
-  }
-
-  return SatisfactionSurvey.create({
-    ticket_id: payload.ticket_id,
-    submitter_id: user.id,
-    resolved_satisfactorily: payload.resolved_satisfactorily,
-    response_time_score: payload.response_time_score,
-    comments: payload.comments || null
-  });
+  await row.destroy();
 }
 
-async function listCannedResponses(user, categoryId) {
-  if (![...OFFICER_OR_ADMIN_ROLES].includes(user.role)) {
-    throw new Error("Role cannot view canned responses.");
+async function deleteOverseerAssignment(user, assignmentId) {
+  if (user.role !== ROLES.SUPERADMIN) {
+    throw new Error("Only superadmin can delete assignments.");
   }
-  const where = {};
-  if (categoryId) {
-    where[Op.or] = [{ category_id: categoryId }, { category_id: null }];
+  const row = await OverseerAssignment.findByPk(assignmentId);
+  if (!row) {
+    throw new Error("Ticket not found or inaccessible.");
   }
-  return CannedResponse.findAll({
-    where,
-    order: [["created_at", "DESC"]]
-  });
+  await row.destroy();
 }
 
-async function createCannedResponse(user, payload) {
-  if (![ROLES.CAMPUS_ADMIN, ROLES.UNIVERSITY_ADMIN].includes(user.role)) {
-    throw new Error("Role cannot create canned responses.");
-  }
-
-  return CannedResponse.create({
-    created_by: user.id,
-    title: payload.title,
-    body: payload.body,
-    category_id: payload.category_id || null
-  });
-}
-
-async function listKnowledgeBase(user) {
-  const where = OFFICER_OR_ADMIN_ROLES.includes(user.role) ? {} : { is_public: true };
-  return KnowledgeBase.findAll({
-    where,
-    order: [["created_at", "DESC"]]
-  });
-}
-
-async function createKnowledgeBase(user, payload) {
-  if (!OFFICER_OR_ADMIN_ROLES.includes(user.role)) {
-    throw new Error("Role cannot create knowledge base entries.");
-  }
-
-  return KnowledgeBase.create({
-    created_by: user.id,
-    title: payload.title,
-    body: payload.body,
-    category_id: payload.category_id || null,
-    source_ticket_id: payload.source_ticket_id || null,
-    is_public: Boolean(payload.is_public)
-  });
-}
-
-async function listChecklistItems(user, ticketId) {
+async function listAttachments(user, ticketId) {
   await getTicketScopedOrThrow(ticketId, user);
-  return TicketChecklistItem.findAll({
+  return TicketAttachment.findAll({
     where: { ticket_id: ticketId },
-    include: [{ model: ResolutionChecklist, as: "checklist", attributes: ["id", "step_order", "step_text"] }],
-    order: [[{ model: ResolutionChecklist, as: "checklist" }, "step_order", "ASC"]]
+    order: [["created_at", "ASC"]]
   });
 }
 
@@ -758,12 +980,16 @@ module.exports = {
   addComment,
   getComments,
   addAttachment,
+  listAttachments,
   getHistory,
-  completeChecklistItem,
-  submitSurvey,
-  listCannedResponses,
-  createCannedResponse,
-  listKnowledgeBase,
-  createKnowledgeBase,
-  listChecklistItems
+  listOfficerAssignments,
+  listOverseerAssignments,
+  listManagedUsers,
+  createOfficerAssignment,
+  deleteOfficerAssignment,
+  createOverseerAssignment,
+  deleteOverseerAssignment,
+  createCategory,
+  getOfficerQueueStats,
+  updateUrgency
 };

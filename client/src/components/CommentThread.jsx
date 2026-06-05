@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatDate } from "../utils/formatDate";
 
-export default function CommentThread({ comments, onAdd }) {
+export default function CommentThread({ comments, onAdd, showInternalToggle = false }) {
   const [body, setBody] = useState("");
   const [isInternal, setIsInternal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!showInternalToggle && isInternal) {
+      setIsInternal(false);
+    }
+  }, [showInternalToggle, isInternal]);
 
   async function submit(event) {
     event.preventDefault();
@@ -40,10 +46,12 @@ export default function CommentThread({ comments, onAdd }) {
       </div>
       <form className="form" onSubmit={submit}>
         <textarea className="textarea" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Add comment..." />
-        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          <input type="checkbox" checked={isInternal} onChange={(e) => setIsInternal(e.target.checked)} />
-          Internal note (officers/admin only)
-        </label>
+        {showInternalToggle && (
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            <input type="checkbox" checked={isInternal} onChange={(e) => setIsInternal(e.target.checked)} />
+            Internal note (officers/admin only)
+          </label>
+        )}
         <button type="submit" className="btn btn-primary" disabled={submitting}>
           {submitting ? "Posting..." : "Post comment"}
         </button>

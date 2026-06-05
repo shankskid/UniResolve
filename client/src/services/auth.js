@@ -5,6 +5,11 @@ export async function registerUser(payload) {
   return data.user;
 }
 
+export async function registerOfficer(payload) {
+  const { data } = await api.post("/auth/register-officer", payload);
+  return data.user;
+}
+
 export async function loginUser(payload) {
   const { data } = await api.post("/auth/login", payload);
   return data;
@@ -23,4 +28,9 @@ export async function forgotPassword(payload) {
 export async function resetPassword(payload) {
   const { data } = await api.post("/auth/reset-password", payload);
   return data;
+}
+
+export async function updateOfficerStatus(officerId, payload) {
+  const { data } = await api.patch(`/auth/officer/${officerId}/status`, payload);
+  return data.user;
 }

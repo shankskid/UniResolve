@@ -5,7 +5,6 @@ function mapServiceError(error, res, next) {
     error.message === "Ticket not found or inaccessible." ||
     error.message === "Invalid submitter or category." ||
     error.message === "Assignee does not exist or is inactive." ||
-    error.message === "Checklist item not found." ||
     error.message === "Notification not found."
   ) {
     return res.status(404).json({ message: error.message });
@@ -19,7 +18,9 @@ function mapServiceError(error, res, next) {
     error.message.includes("urgent") ||
     error.message.includes("only") ||
     error.message.includes("already") ||
-    error.message.includes("limited")
+    error.message.includes("limited") ||
+    error.message.includes("assigned") ||
+    error.message.includes("enabled")
   ) {
     return res.status(400).json({ message: error.message });
   }
@@ -128,64 +129,100 @@ async function getHistory(req, res, next) {
   }
 }
 
-async function updateChecklistItem(req, res, next) {
+async function listOfficerAssignments(req, res, next) {
   try {
-    const item = await TicketService.completeChecklistItem(req.user, req.params.id, req.params.itemId, req.body.is_completed);
-    return res.status(200).json({ item });
+    const assignments = await TicketService.listOfficerAssignments(req.user);
+    return res.status(200).json({ assignments });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function listChecklist(req, res, next) {
+async function listOverseerAssignments(req, res, next) {
   try {
-    const items = await TicketService.listChecklistItems(req.user, req.params.id);
+    const assignments = await TicketService.listOverseerAssignments(req.user);
+    return res.status(200).json({ assignments });
+  } catch (error) {
+    return mapServiceError(error, res, next);
+  }
+}
+
+async function listManagedUsers(req, res, next) {
+  try {
+    const users = await TicketService.listManagedUsers(req.user);
+    return res.status(200).json({ users });
+  } catch (error) {
+    return mapServiceError(error, res, next);
+  }
+}
+
+async function officerQueueStats(req, res, next) {
+  try {
+    const items = await TicketService.getOfficerQueueStats(req.user);
     return res.status(200).json({ items });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function submitSurvey(req, res, next) {
+async function createOfficerAssignment(req, res, next) {
   try {
-    const survey = await TicketService.submitSurvey(req.user, req.body);
-    return res.status(201).json({ survey });
+    const assignment = await TicketService.createOfficerAssignment(req.user, req.body);
+    return res.status(201).json({ assignment });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function listCannedResponses(req, res, next) {
+async function createOverseerAssignment(req, res, next) {
   try {
-    const responses = await TicketService.listCannedResponses(req.user, req.query.category_id);
-    return res.status(200).json({ responses });
+    const assignment = await TicketService.createOverseerAssignment(req.user, req.body);
+    return res.status(201).json({ assignment });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function createCannedResponse(req, res, next) {
+async function createCategory(req, res, next) {
   try {
-    const response = await TicketService.createCannedResponse(req.user, req.body);
-    return res.status(201).json({ response });
+    const category = await TicketService.createCategory(req.user, req.body);
+    return res.status(201).json({ category });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function listKnowledgeBase(req, res, next) {
+async function deleteOfficerAssignment(req, res, next) {
   try {
-    const articles = await TicketService.listKnowledgeBase(req.user);
-    return res.status(200).json({ articles });
+    await TicketService.deleteOfficerAssignment(req.user, req.params.id);
+    return res.status(200).json({ message: "Officer assignment deleted." });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
 }
 
-async function createKnowledgeBase(req, res, next) {
+async function deleteOverseerAssignment(req, res, next) {
   try {
-    const article = await TicketService.createKnowledgeBase(req.user, req.body);
-    return res.status(201).json({ article });
+    await TicketService.deleteOverseerAssignment(req.user, req.params.id);
+    return res.status(200).json({ message: "Overseer assignment deleted." });
+  } catch (error) {
+    return mapServiceError(error, res, next);
+  }
+}
+
+async function listAttachments(req, res, next) {
+  try {
+    const attachments = await TicketService.listAttachments(req.user, req.params.id);
+    return res.status(200).json({ attachments });
+  } catch (error) {
+    return mapServiceError(error, res, next);
+  }
+}
+
+async function updateUrgency(req, res, next) {
+  try {
+    const ticket = await TicketService.updateUrgency(req.user, req.params.id, req.body.urgency);
+    return res.status(200).json({ ticket });
   } catch (error) {
     return mapServiceError(error, res, next);
   }
@@ -202,12 +239,16 @@ module.exports = {
   addComment,
   listComments,
   addAttachment,
+  listAttachments,
   getHistory,
-  updateChecklistItem,
-  listChecklist,
-  submitSurvey,
-  listCannedResponses,
-  createCannedResponse,
-  listKnowledgeBase,
-  createKnowledgeBase
+  listOfficerAssignments,
+  listOverseerAssignments,
+  listManagedUsers,
+  officerQueueStats,
+  createOfficerAssignment,
+  deleteOfficerAssignment,
+  createOverseerAssignment,
+  deleteOverseerAssignment,
+  createCategory,
+  updateUrgency
 };

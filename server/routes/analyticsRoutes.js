@@ -12,6 +12,5 @@ router.get("/overview", analyticsController.overview);
 router.get("/officer/:id", [param("id").isUUID()], validate, analyticsController.officer);
 router.get("/by-category", analyticsController.byCategory);
 router.get("/sla-compliance", analyticsController.slaCompliance);
-router.get("/campus-comparison", analyticsController.campusComparison);
 
 module.exports = router;

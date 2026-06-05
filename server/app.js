@@ -13,9 +13,14 @@ const reportRoutes = require("./routes/reportRoutes");
 const referenceRoutes = require("./routes/referenceRoutes");
 
 const app = express();
+const allowedOrigins = (process.env.CLIENT_URL || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || true
+    origin: allowedOrigins.length ? allowedOrigins : true
   })
 );
 app.use(express.json());

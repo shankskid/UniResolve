@@ -1,6 +1,9 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppLayout from "./components/AppLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
+import AdminAssignmentsPage from "./pages/AdminAssignmentsPage";
+import AdminCategoriesPage from "./pages/AdminCategoriesPage";
+import AdminUsersPage from "./pages/AdminUsersPage";
 import DashboardShell from "./pages/DashboardShell";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import LandingPage from "./pages/LandingPage";
@@ -8,6 +11,7 @@ import LoginPage from "./pages/LoginPage";
 import NewTicketPage from "./pages/NewTicketPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import NotificationsPage from "./pages/NotificationsPage";
+import OfficerRegistrationPage from "./pages/OfficerRegistrationPage";
 import RegisterPage from "./pages/RegisterPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
@@ -59,6 +63,38 @@ export default function App() {
           element={
             <ProtectedRoute>
               <TicketDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/users"
+          element={
+            <ProtectedRoute>
+              <AdminUsersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/assignments"
+          element={
+            <ProtectedRoute>
+              <AdminAssignmentsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/categories"
+          element={
+            <ProtectedRoute>
+              <AdminCategoriesPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/overseer/officers/new"
+          element={
+            <ProtectedRoute>
+              <OfficerRegistrationPage />
             </ProtectedRoute>
           }
         />

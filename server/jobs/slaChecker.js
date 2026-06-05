@@ -1,11 +1,11 @@
 require("dotenv").config();
 const cron = require("node-cron");
 const { Op } = require("sequelize");
-const { JURISDICTIONS, ROLES, TICKET_STATUS } = require("@uniresolve/shared");
-const { sequelize, Department, OfficerScope, Ticket, TicketEscalation, TicketHistory, User } = require("../models");
+const { ROLES, TICKET_STATUS } = require("@uniresolve/shared");
+const { sequelize, OverseerAssignment, Ticket, TicketHistory, User } = require("../models");
 const NotificationService = require("../services/NotificationService");
 
-const ACTIVE_STATUSES = [TICKET_STATUS.OPEN, TICKET_STATUS.IN_PROGRESS, TICKET_STATUS.PENDING_REVIEW];
+const ACTIVE_STATUSES = [TICKET_STATUS.OPEN, TICKET_STATUS.IN_PROGRESS];
 
 async function historyExists(ticketId, fieldChanged, transaction) {
   const row = await TicketHistory.findOne({
@@ -32,92 +32,24 @@ async function writeSystemHistory(ticketId, fieldChanged, oldValue, newValue, tr
   );
 }
 
-function getEscalationTargetRole(ticket) {
-  if (ticket.jurisdiction_type === JURISDICTIONS.HALL) {
-    return ROLES.HALL_OVERSEER;
-  }
-  if (ticket.jurisdiction_type === JURISDICTIONS.DEPARTMENT) {
-    return ROLES.FACULTY_OVERSEER;
-  }
-  if (ticket.jurisdiction_type === JURISDICTIONS.CAMPUS) {
-    return ROLES.UNIVERSITY_ADMIN;
-  }
-  return ROLES.UNIVERSITY_ADMIN;
-}
-
-async function getFacultyOverseersForDepartment(departmentId, transaction) {
-  const department = await Department.findByPk(departmentId, {
-    attributes: ["faculty_id"],
-    transaction
-  });
-  if (!department) {
-    return [];
-  }
-
-  const scopes = await OfficerScope.findAll({
-    where: {
-      scope_type: "faculty",
-      scope_id: department.faculty_id
-    },
-    include: [
-      {
-        model: User,
-        required: true,
-        where: {
-          role: ROLES.FACULTY_OVERSEER,
-          is_active: true
-        }
-      }
-    ],
-    transaction
-  });
-
-  return scopes.map((scope) => scope.user_id);
-}
-
-async function getOverseerRecipients(ticket, transaction) {
-  if (ticket.jurisdiction_type === JURISDICTIONS.HALL) {
-    const users = await User.findAll({
-      where: {
-        role: ROLES.HALL_OVERSEER,
-        campus_id: ticket.campus_id,
-        is_active: true
-      },
-      attributes: ["id"],
+async function getEscalationRecipients(ticket, transaction) {
+  const overseerRows = ticket.assigned_to
+    ? await OverseerAssignment.findAll({
+      where: { officer_id: ticket.assigned_to },
+      attributes: ["overseer_id"],
       transaction
-    });
-    return users.map((row) => row.id);
-  }
-
-  if (ticket.jurisdiction_type === JURISDICTIONS.DEPARTMENT) {
-    if (!ticket.submitter?.department_id) {
-      return [];
-    }
-    return getFacultyOverseersForDepartment(ticket.submitter.department_id, transaction);
-  }
-
-  if (ticket.jurisdiction_type === JURISDICTIONS.CAMPUS) {
-    const scopes = await OfficerScope.findAll({
-      where: { scope_type: "campus", scope_id: ticket.campus_id },
-      include: [
-        {
-          model: User,
-          required: true,
-          where: { role: ROLES.CAMPUS_ADMIN, is_active: true }
-        }
-      ],
-      attributes: ["user_id"],
-      transaction
-    });
-    return scopes.map((scope) => scope.user_id);
-  }
-
-  const users = await User.findAll({
-    where: { role: ROLES.UNIVERSITY_ADMIN, is_active: true },
+    })
+    : [];
+  const superadmins = await User.findAll({
+    where: { role: ROLES.SUPERADMIN, is_active: true },
     attributes: ["id"],
     transaction
   });
-  return users.map((row) => row.id);
+
+  return [
+    ...overseerRows.map((row) => row.overseer_id),
+    ...superadmins.map((row) => row.id)
+  ];
 }
 
 async function handleWarning(ticket, elapsedPct, transaction) {
@@ -139,15 +71,6 @@ async function handleWarning(ticket, elapsedPct, transaction) {
     transaction
   );
 
-  const assignee = await User.findByPk(ticket.assigned_to, { attributes: ["email"], transaction });
-  if (assignee?.email) {
-    await NotificationService.sendEmail({
-      to: assignee.email,
-      subject: `UniResolve SLA Warning - ${ticket.id}`,
-      text: `Ticket ${ticket.id} has reached 75% of SLA elapsed time.`
-    });
-  }
-
   await writeSystemHistory(ticket.id, "sla_warning_75", null, "triggered", transaction);
 }
 
@@ -163,9 +86,9 @@ async function handleBreach(ticket, transaction) {
 
   await writeSystemHistory(ticket.id, "sla_breach", priorBreached, true, transaction);
 
-  const overseerRecipients = await getOverseerRecipients(ticket, transaction);
+  const recipients = await getEscalationRecipients(ticket, transaction);
   await NotificationService.notifyMany(
-    overseerRecipients,
+    recipients,
     {
       ticket_id: ticket.id,
       type: "sla_breach",
@@ -173,20 +96,6 @@ async function handleBreach(ticket, transaction) {
     },
     transaction
   );
-
-  if (ticket.status === TICKET_STATUS.OPEN) {
-    const targetRole = getEscalationTargetRole(ticket);
-    await TicketEscalation.create(
-      {
-        ticket_id: ticket.id,
-        escalated_by: ticket.submitter_id,
-        escalated_to_role: targetRole,
-        reason: "Automatic escalation on SLA breach."
-      },
-      { transaction }
-    );
-    await writeSystemHistory(ticket.id, "sla_auto_escalation", null, targetRole, transaction);
-  }
 }
 
 async function processTicket(ticket) {
@@ -218,13 +127,6 @@ async function runSlaCheckOnce() {
       status: { [Op.in]: ACTIVE_STATUSES },
       sla_deadline: { [Op.ne]: null }
     },
-    include: [
-      {
-        model: User,
-        as: "submitter",
-        attributes: ["id", "department_id"]
-      }
-    ],
     order: [["created_at", "ASC"]]
   });
 

@@ -16,6 +16,7 @@ const storage = multer.diskStorage({
   }
 });
 
+// Original filter — allows all types the shared constants permit (docs, images, etc.)
 function fileFilter(_req, file, cb) {
   if (!ANONYMOUS_SUBMISSION.ALLOWED_MIME_TYPES.includes(file.mimetype)) {
     cb(new Error("Unsupported file type."));
@@ -24,12 +25,35 @@ function fileFilter(_req, file, cb) {
   cb(null, true);
 }
 
+// Image-only filter — used for compulsory ticket evidence photos
+const IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif"
+]);
+
+function imageOnlyFilter(_req, file, cb) {
+  if (!IMAGE_MIME_TYPES.has(file.mimetype)) {
+    cb(new Error("Only image files are accepted (jpg, png, webp, gif)."));
+    return;
+  }
+  cb(null, true);
+}
+
 const upload = multer({
   storage,
   fileFilter,
-  limits: {
-    fileSize: ANONYMOUS_SUBMISSION.MAX_ATTACHMENT_BYTES
-  }
+  limits: { fileSize: ANONYMOUS_SUBMISSION.MAX_ATTACHMENT_BYTES }
+});
+
+// Separate multer instance restricted to images only
+const uploadImage = multer({
+  storage,
+  fileFilter: imageOnlyFilter,
+  limits: { fileSize: ANONYMOUS_SUBMISSION.MAX_ATTACHMENT_BYTES }
 });
 
 module.exports = upload;
+module.exports.imageOnly = uploadImage;

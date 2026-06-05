@@ -1,5 +1,6 @@
 const express = require("express");
 const { body } = require("express-validator");
+const { TICKET_SCOPE_VALUES, URGENCY_VALUES } = require("@uniresolve/shared");
 const ticketsController = require("../controllers/ticketsController");
 const authenticate = require("../middleware/authenticate");
 const validate = require("../middleware/validate");
@@ -8,42 +9,38 @@ const router = express.Router();
 
 router.use(authenticate);
 
+router.get("/admin/users", ticketsController.listManagedUsers);
+router.get("/admin/officer-assignments", ticketsController.listOfficerAssignments);
+router.get("/admin/overseer-assignments", ticketsController.listOverseerAssignments);
 router.post(
-  "/surveys",
+  "/admin/officer-assignments",
   [
-    body("ticket_id").isUUID(),
-    body("resolved_satisfactorily").isBoolean(),
-    body("response_time_score").isInt({ min: 1, max: 5 }),
-    body("comments").optional().isString().trim().isLength({ max: 5000 })
+    body("officer_id").isUUID(),
+    body("scope_type").isIn(TICKET_SCOPE_VALUES),
+    body("scope_id").isUUID()
   ],
   validate,
-  ticketsController.submitSurvey
+  ticketsController.createOfficerAssignment
 );
-
-router.get("/canned-responses", ticketsController.listCannedResponses);
 router.post(
-  "/canned-responses",
+  "/admin/overseer-assignments",
+  [body("overseer_id").isUUID(), body("officer_id").isUUID()],
+  validate,
+  ticketsController.createOverseerAssignment
+);
+router.post(
+  "/admin/categories",
   [
-    body("title").isString().trim().isLength({ min: 2, max: 200 }),
-    body("body").isString().trim().isLength({ min: 2, max: 10000 }),
-    body("category_id").optional({ nullable: true }).isUUID()
+    body("name").isString().trim().isLength({ min: 2, max: 100 }),
+    body("scope_type").isIn(TICKET_SCOPE_VALUES),
+    body("min_urgency").optional({ nullable: true }).isIn(URGENCY_VALUES)
   ],
   validate,
-  ticketsController.createCannedResponse
+  ticketsController.createCategory
 );
-
-router.get("/knowledge-base", ticketsController.listKnowledgeBase);
-router.post(
-  "/knowledge-base",
-  [
-    body("title").isString().trim().isLength({ min: 2, max: 200 }),
-    body("body").isString().trim().isLength({ min: 2, max: 20000 }),
-    body("category_id").optional({ nullable: true }).isUUID(),
-    body("source_ticket_id").optional({ nullable: true }).isUUID(),
-    body("is_public").optional().isBoolean()
-  ],
-  validate,
-  ticketsController.createKnowledgeBase
-);
+router.get("/officer-queue-stats", ticketsController.officerQueueStats);
+router.delete("/admin/officer-assignments/:id", ticketsController.deleteOfficerAssignment);
+router.delete("/admin/overseer-assignments/:id", ticketsController.deleteOverseerAssignment);
+router.get("/tickets/:id/attachments", ticketsController.listAttachments);
 
 module.exports = router;

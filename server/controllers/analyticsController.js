@@ -3,7 +3,8 @@ const AnalyticsService = require("../services/AnalyticsService");
 function mapError(error, res, next) {
   if (
     error.message.includes("cannot access") ||
-    error.message.includes("Only university admin") ||
+    error.message.includes("Only superadmin") ||
+    error.message.includes("cannot export") ||
     error.message.includes("can only") ||
     error.message === "Officer not found."
   ) {
@@ -35,7 +36,7 @@ async function officer(req, res, next) {
 
 async function byCategory(req, res, next) {
   try {
-    const data = await AnalyticsService.getByCategory(req.user, req.query.campus_id);
+    const data = await AnalyticsService.getByCategory(req.user);
     return res.status(200).json({ items: data });
   } catch (error) {
     return mapError(error, res, next);
@@ -46,15 +47,6 @@ async function slaCompliance(req, res, next) {
   try {
     const data = await AnalyticsService.getSlaCompliance(req.user);
     return res.status(200).json(data);
-  } catch (error) {
-    return mapError(error, res, next);
-  }
-}
-
-async function campusComparison(req, res, next) {
-  try {
-    const data = await AnalyticsService.getCampusComparison(req.user);
-    return res.status(200).json({ items: data });
   } catch (error) {
     return mapError(error, res, next);
   }
@@ -85,7 +77,6 @@ module.exports = {
   officer,
   byCategory,
   slaCompliance,
-  campusComparison,
   exportReport,
   auditLog
 };

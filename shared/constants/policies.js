@@ -17,8 +17,9 @@ const ANONYMOUS_SUBMISSION = Object.freeze({
 });
 
 const NON_ASSIGNABLE_ROLES = Object.freeze([
-  ROLES.HALL_OVERSEER,
-  ROLES.FACULTY_OVERSEER
+  ROLES.STUDENT,
+  ROLES.STAFF,
+  ROLES.OVERSEER
 ]);
 
 function canBeAssignedRole(role) {

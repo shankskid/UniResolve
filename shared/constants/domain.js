@@ -1,25 +1,22 @@
 const ROLES = Object.freeze({
   STUDENT: "student",
   STAFF: "staff",
-  LECTURER: "lecturer",
-  HALL_GRIEVANCE_OFFICER: "hall_grievance_officer",
-  HALL_OVERSEER: "hall_overseer",
-  DEPT_GRIEVANCE_OFFICER: "dept_grievance_officer",
-  FACULTY_OVERSEER: "faculty_overseer",
-  CAMPUS_ADMIN: "campus_admin",
-  UNIVERSITY_ADMIN: "university_admin"
+  OFFICER: "officer",
+  OVERSEER: "overseer",
+  SUPERADMIN: "superadmin"
 });
 
 const ROLE_VALUES = Object.freeze(Object.values(ROLES));
 
-const JURISDICTIONS = Object.freeze({
+const TICKET_SCOPE = Object.freeze({
   HALL: "hall",
-  DEPARTMENT: "department",
-  CAMPUS: "campus",
-  UNIVERSITY: "university"
+  DEPARTMENT: "department"
 });
 
-const JURISDICTION_VALUES = Object.freeze(Object.values(JURISDICTIONS));
+const TICKET_SCOPE_VALUES = Object.freeze(Object.values(TICKET_SCOPE));
+
+const JURISDICTIONS = TICKET_SCOPE;
+const JURISDICTION_VALUES = TICKET_SCOPE_VALUES;
 
 const URGENCY = Object.freeze({
   LOW: "low",
@@ -33,7 +30,6 @@ const URGENCY_VALUES = Object.freeze(Object.values(URGENCY));
 const TICKET_STATUS = Object.freeze({
   OPEN: "open",
   IN_PROGRESS: "in_progress",
-  PENDING_REVIEW: "pending_review",
   RESOLVED: "resolved",
   CLOSED: "closed"
 });
@@ -42,7 +38,7 @@ const TICKET_STATUS_VALUES = Object.freeze(Object.values(TICKET_STATUS));
 
 function normalizeJurisdiction(value) {
   if (value === "dept") {
-    return JURISDICTIONS.DEPARTMENT;
+    return TICKET_SCOPE.DEPARTMENT;
   }
   return value;
 }
@@ -50,6 +46,8 @@ function normalizeJurisdiction(value) {
 module.exports = {
   ROLES,
   ROLE_VALUES,
+  TICKET_SCOPE,
+  TICKET_SCOPE_VALUES,
   JURISDICTIONS,
   JURISDICTION_VALUES,
   URGENCY,

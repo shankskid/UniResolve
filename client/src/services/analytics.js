@@ -15,7 +15,7 @@ export async function getSlaCompliance() {
   return data;
 }
 
-export async function getCampusComparison() {
-  const { data } = await api.get("/analytics/campus-comparison");
-  return data.items || [];
+export async function exportCsvReport() {
+  const response = await api.get("/reports/export", { responseType: "blob" });
+  return response.data;
 }
